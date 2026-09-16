@@ -49,7 +49,7 @@ x-app-environment: &app-environment
 
 services:
   lite:
-    image: stage-dittofeed-lite:v0.24.0-alpha.17-stage-ui2
+    image: stage-dittofeed-lite:v0.24.0-alpha.17-stage-ui3
     container_name: stage-dittofeed-lite
     restart: unless-stopped
     command:

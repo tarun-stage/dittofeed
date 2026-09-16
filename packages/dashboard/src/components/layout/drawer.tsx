@@ -6,6 +6,7 @@ import { useMemo } from "react";
 import { drawerWidth } from "../config";
 // project import
 import DrawerContent from "./drawer/drawerContent";
+import DrawerHeader from "./drawer/drawerHeader";
 import MiniDrawerStyled from "./drawer/miniDrawerStyled";
 
 // ==============================|| MAIN LAYOUT - DRAWER ||============================== //
@@ -33,6 +34,7 @@ function MainDrawer({
     >
       {!matchDownMD ? (
         <MiniDrawerStyled variant="permanent" open={open}>
+          <DrawerHeader open={open} />
           {drawerContent}
         </MiniDrawerStyled>
       ) : (
@@ -54,7 +56,12 @@ function MainDrawer({
             },
           }}
         >
-          {open && drawerContent}
+          {open && (
+            <>
+              <DrawerHeader open />
+              {drawerContent}
+            </>
+          )}
         </Drawer>
       )}
     </Box>
