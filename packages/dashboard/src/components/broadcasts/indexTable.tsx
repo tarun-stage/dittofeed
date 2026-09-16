@@ -3,6 +3,8 @@ import {
   Archive as ArchiveIcon,
   ArrowDownward,
   ArrowUpward,
+  CampaignOutlined,
+  CheckCircleOutline,
   Computer,
   ContentCopy as ContentCopyIcon,
   Home,
@@ -11,12 +13,17 @@ import {
   KeyboardDoubleArrowLeft,
   KeyboardDoubleArrowRight,
   MoreVert as MoreVertIcon,
+  NotificationsActiveOutlined,
   OpenInNew as OpenInNewIcon,
+  ScheduleOutlined,
+  Search as SearchIcon,
   UnfoldMore,
+  WhatsApp,
 } from "@mui/icons-material";
 import {
   Box,
   Button,
+  Chip,
   CircularProgress,
   Dialog,
   DialogActions,
@@ -24,6 +31,7 @@ import {
   DialogTitle,
   FormControlLabel,
   IconButton,
+  InputAdornment,
   Menu,
   MenuItem,
   Paper,
@@ -239,7 +247,7 @@ function NameCell({ row, getValue }: CellContext<Row, unknown>) {
           {name}
         </Typography>
       </Tooltip>
-      <Tooltip title="View Broadcast Details">
+      <Tooltip title="Open campaign">
         <IconButton size="small" component={Link} href={href}>
           <OpenInNewIcon fontSize="small" />
         </IconButton>
@@ -252,8 +260,44 @@ function NameCell({ row, getValue }: CellContext<Row, unknown>) {
 function StatusCell({ getValue }: CellContext<Row, unknown>) {
   const rawStatus = getValue<string>();
   const humanizedStatus = humanizeBroadcastStatus(rawStatus);
-  // TODO: Consider using MUI Chip for better visual styling
-  return <Typography variant="body2">{humanizedStatus}</Typography>;
+  const color: React.ComponentProps<typeof Chip>["color"] = (() => {
+    switch (rawStatus) {
+      case "Running":
+      case "Completed":
+        return "success";
+      case "Scheduled":
+        return "info";
+      case "Paused":
+        return "warning";
+      case "Cancelled":
+      case "Failed":
+        return "error";
+      default:
+        return "default";
+    }
+  })();
+  return (
+    <Chip
+      label={humanizedStatus}
+      color={color}
+      size="small"
+      variant={rawStatus === "Running" ? "filled" : "outlined"}
+    />
+  );
+}
+
+function ChannelCell({ row }: CellContext<Row, unknown>) {
+  if (!("version" in row.original) || row.original.version !== "V2") {
+    return <Typography variant="body2">Legacy</Typography>;
+  }
+  const channel = row.original.config.message.type;
+  let label: string = channel;
+  if (channel === ChannelType.MobilePush) {
+    label = "Push";
+  } else if (channel === ChannelType.Webhook) {
+    label = "WhatsApp";
+  }
+  return <Chip label={label} size="small" variant="outlined" />;
 }
 
 // TimeCell for displaying timestamps like createdAt
@@ -355,10 +399,12 @@ export default function BroadcastsTable() {
   const [broadcastName, setBroadcastName] = useState("");
   const [selectedChannel, setSelectedChannel] = useState<
     BroadcastV2Config["message"]["type"]
-  >(ChannelType.Email);
+  >(ChannelType.MobilePush);
   const [snackbarOpen, setSnackbarOpen] = useState(false);
   const [snackbarMessage, setSnackbarMessage] = useState("");
   const [showArchived, setShowArchived] = useState(false);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [statusFilter, setStatusFilter] = useState("All");
   const [sorting, setSorting] = useState<SortingState>([]);
 
   const query = useBroadcastsQuery();
@@ -366,7 +412,7 @@ export default function BroadcastsTable() {
 
   const duplicateBroadcastMutation = useDuplicateResourceMutation({
     onSuccess: (data) => {
-      setSnackbarMessage(`Broadcast duplicated as "${data.name}"!`);
+      setSnackbarMessage(`Campaign duplicated as "${data.name}"!`);
       setSnackbarOpen(true);
     },
     onError: (error) => {
@@ -375,22 +421,47 @@ export default function BroadcastsTable() {
         // eslint-disable-next-line @typescript-eslint/consistent-type-assertions
         (error as AxiosError<{ message?: string }>).response?.data.message ??
         "API Error";
-      setSnackbarMessage(`Failed to duplicate broadcast: ${errorMsg}`);
+      setSnackbarMessage(`Failed to duplicate campaign: ${errorMsg}`);
       setSnackbarOpen(true);
     },
   });
 
   // query.data is (BroadcastResource | BroadcastResourceV2)[]
-  const rawData: Row[] = query.data ?? [];
+  const rawData: Row[] = useMemo(() => query.data ?? [], [query.data]);
 
-  // Filter data based on showArchived state
+  const activeData = useMemo(
+    () => rawData.filter((broadcast) => !broadcast.archived),
+    [rawData],
+  );
+
   const broadcastsData: Row[] = useMemo(() => {
-    if (showArchived) {
-      return rawData;
-    }
-    // Assuming an 'archived' property exists on Row type items
-    return rawData.filter((b) => !b.archived);
-  }, [rawData, showArchived]);
+    const normalizedSearch = searchQuery.trim().toLowerCase();
+    return rawData.filter((broadcast) => {
+      if (!showArchived && broadcast.archived) return false;
+      if (statusFilter !== "All" && broadcast.status !== statusFilter) {
+        return false;
+      }
+      return (
+        normalizedSearch.length === 0 ||
+        broadcast.name.toLowerCase().includes(normalizedSearch)
+      );
+    });
+  }, [rawData, searchQuery, showArchived, statusFilter]);
+
+  const campaignCounts = useMemo(
+    () => ({
+      total: activeData.length,
+      running: activeData.filter((campaign) => campaign.status === "Running")
+        .length,
+      scheduled: activeData.filter(
+        (campaign) => campaign.status === "Scheduled",
+      ).length,
+      completed: activeData.filter(
+        (campaign) => campaign.status === "Completed",
+      ).length,
+    }),
+    [activeData],
+  );
 
   const [pagination, setPagination] = useState({
     pageIndex: 0, // initial page index
@@ -400,7 +471,7 @@ export default function BroadcastsTable() {
   // Effect to show snackbar on load error
   useEffect(() => {
     if (query.isError) {
-      setSnackbarMessage("Failed to load broadcasts.");
+      setSnackbarMessage("Failed to load campaigns.");
       setSnackbarOpen(true);
     }
   }, [query.isError]);
@@ -418,6 +489,11 @@ export default function BroadcastsTable() {
         header: "Status",
         accessorKey: "status",
         cell: StatusCell,
+      },
+      {
+        id: "channel",
+        header: "Channel",
+        cell: ChannelCell,
       },
       {
         id: "createdAt",
@@ -483,6 +559,11 @@ export default function BroadcastsTable() {
             type: ChannelType.Webhook,
           };
           break;
+        case ChannelType.MobilePush:
+          broadcastConfigMessage = {
+            type: ChannelType.MobilePush,
+          };
+          break;
         default:
           // Should not happen with the ToggleButtonGroup
           return;
@@ -499,7 +580,7 @@ export default function BroadcastsTable() {
       createBroadcastMutation.mutate(newBroadcastData, {
         onSuccess: (data) => {
           // queryClient.invalidateQueries({ queryKey: ["broadcasts"] }); // Handled by the hook
-          setSnackbarMessage("Broadcast created successfully!");
+          setSnackbarMessage("Campaign created successfully!");
           setSnackbarOpen(true);
           setDialogOpen(false);
           setBroadcastName("");
@@ -507,7 +588,7 @@ export default function BroadcastsTable() {
         },
         onError: (_error) => {
           // console.error("Failed to create broadcast:", error);
-          setSnackbarMessage("Failed to create broadcast.");
+          setSnackbarMessage("Failed to create campaign.");
           setSnackbarOpen(true);
         },
       });
@@ -516,7 +597,7 @@ export default function BroadcastsTable() {
 
   // Handle channel type selection
   const handleChannelChange = (
-    event: React.MouseEvent<HTMLElement>,
+    _event: React.MouseEvent<HTMLElement>,
     newChannel: BroadcastV2Config["message"]["type"] | null,
   ) => {
     if (newChannel !== null) {
@@ -528,18 +609,23 @@ export default function BroadcastsTable() {
   const closeDialog = () => {
     setDialogOpen(false);
     setBroadcastName("");
-    setSelectedChannel(ChannelType.Email);
+    setSelectedChannel(ChannelType.MobilePush);
   };
 
   return (
     <>
-      <Stack spacing={2} sx={{ height: "100%", width: "100%" }}>
+      <Stack spacing={2.5} sx={{ height: "100%", width: "100%" }}>
         <Stack
           direction="row"
           justifyContent="space-between"
           alignItems="center"
         >
-          <Typography variant="h4">Broadcasts</Typography>
+          <Stack spacing={0.5}>
+            <Typography variant="h4">Campaigns</Typography>
+            <Typography variant="body2" color="text.secondary">
+              Create and monitor Push and WhatsApp campaigns.
+            </Typography>
+          </Stack>
           <Stack direction="row" spacing={1} alignItems="center">
             <FormControlLabel
               control={
@@ -564,9 +650,91 @@ export default function BroadcastsTable() {
               onClick={() => setDialogOpen(true)}
               startIcon={<AddIcon />}
             >
-              New Broadcast
+              New Campaign
             </Button>
           </Stack>
+        </Stack>
+        <Stack direction={{ xs: "column", md: "row" }} spacing={1.5}>
+          {[
+            {
+              label: "Total campaigns",
+              value: campaignCounts.total,
+              icon: <CampaignOutlined fontSize="small" />,
+            },
+            {
+              label: "Running",
+              value: campaignCounts.running,
+              icon: <NotificationsActiveOutlined fontSize="small" />,
+            },
+            {
+              label: "Scheduled",
+              value: campaignCounts.scheduled,
+              icon: <ScheduleOutlined fontSize="small" />,
+            },
+            {
+              label: "Completed",
+              value: campaignCounts.completed,
+              icon: <CheckCircleOutline fontSize="small" />,
+            },
+          ].map((metric) => (
+            <Paper
+              key={metric.label}
+              variant="outlined"
+              sx={{ flex: 1, px: 2, py: 1.5, minWidth: 0 }}
+            >
+              <Stack direction="row" spacing={1.5} alignItems="center">
+                <Box sx={{ color: "primary.main", display: "flex" }}>
+                  {metric.icon}
+                </Box>
+                <Box>
+                  <Typography variant="h4" lineHeight={1.1}>
+                    {metric.value.toLocaleString()}
+                  </Typography>
+                  <Typography variant="caption" color="text.secondary">
+                    {metric.label}
+                  </Typography>
+                </Box>
+              </Stack>
+            </Paper>
+          ))}
+        </Stack>
+        <Stack
+          direction={{ xs: "column", lg: "row" }}
+          spacing={1.5}
+          justifyContent="space-between"
+          alignItems={{ xs: "stretch", lg: "center" }}
+        >
+          <TextField
+            size="small"
+            label="Search campaigns"
+            value={searchQuery}
+            onChange={(event) => setSearchQuery(event.target.value)}
+            sx={{ width: { xs: "100%", lg: 360 } }}
+            InputProps={{
+              startAdornment: (
+                <InputAdornment position="start">
+                  <SearchIcon fontSize="small" />
+                </InputAdornment>
+              ),
+            }}
+          />
+          <ToggleButtonGroup
+            value={statusFilter}
+            exclusive
+            size="small"
+            onChange={(_, value: string | null) => {
+              if (value) setStatusFilter(value);
+            }}
+            aria-label="Campaign status"
+          >
+            {["All", "Draft", "Running", "Scheduled", "Completed"].map(
+              (status) => (
+                <ToggleButton key={status} value={status}>
+                  {status}
+                </ToggleButton>
+              ),
+            )}
+          </ToggleButtonGroup>
         </Stack>
         <TableContainer component={Paper}>
           <Table stickyHeader>
@@ -653,7 +821,7 @@ export default function BroadcastsTable() {
                 broadcastsData.length === 0 && (
                   <TableRow>
                     <TableCell colSpan={columns.length} align="center">
-                      No broadcasts found.
+                      No campaigns match the selected filters.
                     </TableCell>
                   </TableRow>
                 )}
@@ -743,7 +911,7 @@ export default function BroadcastsTable() {
         </TableContainer>
       </Stack>
 
-      {/* Create Broadcast Dialog */}
+      {/* Create Campaign Dialog */}
       <Dialog
         open={dialogOpen}
         onClose={closeDialog}
@@ -751,12 +919,12 @@ export default function BroadcastsTable() {
         fullWidth
         TransitionProps={{ onEntered: () => nameInputRef.current?.focus() }}
       >
-        <DialogTitle>Create New Broadcast</DialogTitle>
+        <DialogTitle>Create Campaign</DialogTitle>
         <DialogContent>
           <TextField
             margin="dense"
             id="name"
-            label="Broadcast Name"
+            label="Campaign Name"
             type="text"
             fullWidth
             variant="standard"
@@ -779,14 +947,13 @@ export default function BroadcastsTable() {
             aria-label="channel type"
             size="small"
           >
-            <ToggleButton value={ChannelType.Email} aria-label="Email">
-              Email
+            <ToggleButton value={ChannelType.MobilePush} aria-label="Push">
+              <NotificationsActiveOutlined fontSize="small" sx={{ mr: 1 }} />
+              Push Notification
             </ToggleButton>
-            <ToggleButton value={ChannelType.Sms} aria-label="SMS">
-              SMS
-            </ToggleButton>
-            <ToggleButton value={ChannelType.Webhook} aria-label="Webhook">
-              Webhook
+            <ToggleButton value={ChannelType.Webhook} aria-label="WhatsApp">
+              <WhatsApp fontSize="small" sx={{ mr: 1 }} />
+              WhatsApp
             </ToggleButton>
           </ToggleButtonGroup>
         </DialogContent>

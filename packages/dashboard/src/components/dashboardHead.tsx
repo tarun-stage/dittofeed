@@ -20,14 +20,14 @@ export default function DashboardHead() {
   return (
     <Head>
       <title>
-        {whiteLabelConfig?.title ? whiteLabelConfig.title : "Dittofeed"}
+        {whiteLabelConfig?.title ? whiteLabelConfig.title : "STAGE ENGAGE"}
       </title>
       {whiteLabelConfig?.favicon ? (
         <link rel="icon" href={whiteLabelConfig.favicon} />
       ) : (
         <link rel="icon" type="image/png" href="/dashboard/favicon.png" />
       )}
-      <meta name="description" content="Open Source Customer Engagement" />
+      <meta name="description" content="STAGE customer engagement platform" />
     </Head>
   );
 }
