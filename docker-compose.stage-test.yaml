@@ -1,0 +1,325 @@
+name: stage-dittofeed
+
+x-logging: &default-logging
+  driver: local
+  options:
+    max-size: 10m
+    max-file: "3"
+
+x-app-environment: &app-environment
+  NODE_ENV: production
+  APP_VERSION: v0.24.0-alpha.17
+  DATABASE_HOST: stage-dittofeed-postgres
+  DATABASE_PORT: "5432"
+  DATABASE_USER: ${DATABASE_USER:?DATABASE_USER is required}
+  DATABASE_PASSWORD: ${DATABASE_PASSWORD:?DATABASE_PASSWORD is required}
+  DATABASE_NAME: dittofeed_stage_test
+  CLICKHOUSE_HOST: http://stage-dittofeed-clickhouse:8123
+  CLICKHOUSE_DATABASE: dittofeed_stage_test
+  CLICKHOUSE_USER: ${CLICKHOUSE_USER:?CLICKHOUSE_USER is required}
+  CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:?CLICKHOUSE_PASSWORD is required}
+  CLICKHOUSE_MAX_MEMORY_USAGE: "1073741824"
+  CLICKHOUSE_MAX_BYTES_BEFORE_EXTERNAL_GROUP_BY: "536870912"
+  TEMPORAL_ADDRESS: stage-dittofeed-temporal:7233
+  TEMPORAL_NAMESPACE: stage-dittofeed-test
+  WORKSPACE_NAME: STAGE Dittofeed Test
+  AUTH_MODE: single-tenant
+  PASSWORD: ${PASSWORD:?PASSWORD is required}
+  SECRET_KEY: ${SECRET_KEY:?SECRET_KEY is required}
+  SESSION_COOKIE_SECURE: "false"
+  DASHBOARD_URL: http://10.50.0.245:3100
+  DASHBOARD_API_BASE: http://10.50.0.245:3100
+  ALLOWED_ORIGINS: http://10.50.0.245:3100
+  WRITE_MODE: ch-async
+  BOOTSTRAP: ${BOOTSTRAP:-false}
+  BOOTSTRAP_SAFE: "true"
+  BOOTSTRAP_EVENTS: "false"
+  DITTOFEED_TELEMETRY_DISABLED: "true"
+  TRACK_DASHBOARD: "false"
+  ENABLE_MOBILE_PUSH: "true"
+  DITTOFEED_MOBILE_EVENTS_URL: https://engage.stage.in/api/dittofeed/mobile-push
+  LOG_CONFIG: "false"
+  BROADCAST_SEND_MESSAGES_MAX_ATTEMPTS: "1"
+  ENABLE_STAGE_WAREHOUSE_AUDIENCES: "true"
+  SOURCE_CLICKHOUSE_HOST: ${SOURCE_CLICKHOUSE_HOST:?SOURCE_CLICKHOUSE_HOST is required}
+  SOURCE_CLICKHOUSE_PORT: ${SOURCE_CLICKHOUSE_PORT:-443}
+  SOURCE_CLICKHOUSE_SECURE: ${SOURCE_CLICKHOUSE_SECURE:-true}
+  SOURCE_CLICKHOUSE_USER: ${SOURCE_CLICKHOUSE_USER:?SOURCE_CLICKHOUSE_USER is required}
+  SOURCE_CLICKHOUSE_PASSWORD: ${SOURCE_CLICKHOUSE_PASSWORD:?SOURCE_CLICKHOUSE_PASSWORD is required}
+
+services:
+  lite:
+    image: stage-dittofeed-lite:v0.24.0-alpha.17-stage
+    container_name: stage-dittofeed-lite
+    restart: unless-stopped
+    command:
+      - node
+      - --max-old-space-size=1024
+      - ./packages/lite/dist/scripts/startLite.js
+      - --workspace-name=STAGE Dittofeed Test
+    environment:
+      <<: *app-environment
+      ENABLE_WORKER: "false"
+    ports:
+      - "10.50.0.245:3100:3000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy
+      temporal:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - fetch('http://127.0.0.1:3000/api').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))
+      interval: 15s
+      timeout: 5s
+      retries: 20
+      start_period: 90s
+    mem_limit: 1024m
+    cpus: 1.0
+    pids_limit: 512
+    logging: *default-logging
+    networks:
+      - dittofeed
+
+  worker:
+    image: stage-dittofeed-lite:v0.24.0-alpha.17-stage
+    container_name: stage-dittofeed-worker
+    restart: unless-stopped
+    command:
+      - node
+      - --max-old-space-size=1024
+      - ./packages/worker/dist/scripts/startWorker.js
+    environment:
+      <<: *app-environment
+      TASK_QUEUE: default
+    depends_on:
+      postgres:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy
+      temporal:
+        condition: service_healthy
+    mem_limit: 1536m
+    cpus: 1.5
+    pids_limit: 512
+    logging: *default-logging
+    networks:
+      - dittofeed
+
+  ingress:
+    image: nginx:1.27-alpine
+    container_name: stage-dittofeed-ingress
+    restart: unless-stopped
+    environment:
+      CELETEL_WEBHOOK_KEY: ${CELETEL_WEBHOOK_KEY:?CELETEL_WEBHOOK_KEY is required}
+      NGINX_ENVSUBST_FILTER: CELETEL_WEBHOOK_KEY
+    ports:
+      - "10.50.0.245:18080:8080"
+    volumes:
+      - ./ingress-nginx.conf.template:/etc/nginx/templates/default.conf.template:ro
+    depends_on:
+      lite:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - CMD
+        - wget
+        - -qO-
+        - http://127.0.0.1:8080/_dittofeed_ingress_health
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    mem_limit: 128m
+    cpus: 0.25
+    pids_limit: 128
+    logging: *default-logging
+    networks:
+      - dittofeed
+
+  selective-stream:
+    image: stage-dittofeed-lite:v0.24.0-alpha.17-stage
+    container_name: stage-dittofeed-selective-stream
+    profiles:
+      - streaming
+    restart: unless-stopped
+    working_dir: /service
+    command:
+      - node
+      - ./scripts/stage-selective-stream.mjs
+    environment:
+      DATABASE_HOST: stage-dittofeed-postgres
+      DATABASE_PORT: "5432"
+      DATABASE_USER: ${DATABASE_USER:?DATABASE_USER is required}
+      DATABASE_PASSWORD: ${DATABASE_PASSWORD:?DATABASE_PASSWORD is required}
+      DATABASE_NAME: dittofeed_stage_test
+      DITTOFEED_BATCH_URL: http://stage-dittofeed-lite:3000/api/public/apps/batch
+      DITTOFEED_WRITE_KEY: ${DITTOFEED_WRITE_KEY:-}
+      SOURCE_CLICKHOUSE_HOST: ${SOURCE_CLICKHOUSE_HOST:?SOURCE_CLICKHOUSE_HOST is required}
+      SOURCE_CLICKHOUSE_PORT: ${SOURCE_CLICKHOUSE_PORT:-443}
+      SOURCE_CLICKHOUSE_SECURE: ${SOURCE_CLICKHOUSE_SECURE:-true}
+      SOURCE_CLICKHOUSE_USER: ${SOURCE_CLICKHOUSE_USER:?SOURCE_CLICKHOUSE_USER is required}
+      SOURCE_CLICKHOUSE_PASSWORD: ${SOURCE_CLICKHOUSE_PASSWORD:?SOURCE_CLICKHOUSE_PASSWORD is required}
+      SELECTIVE_STREAM_POLL_MS: "30000"
+      SELECTIVE_STREAM_DISCOVERY_MS: "60000"
+      SELECTIVE_STREAM_BOOTSTRAP_SECONDS: "3600"
+      SELECTIVE_STREAM_BATCH_SIZE: "100"
+      SELECTIVE_STREAM_MAX_BATCHES_PER_POLL: "2"
+      SELECTIVE_STREAM_MAX_PROFILE_VERSIONS: "50000"
+      SELECTIVE_STREAM_MAX_EVENT_RECEIPTS: "200000"
+      SELECTIVE_STREAM_STATE_FILE: /state/selective-stream.json
+    volumes:
+      - ./scripts/stage-selective-stream.mjs:/service/scripts/stage-selective-stream.mjs:ro
+      - selective-stream-state:/state
+    depends_on:
+      lite:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - const fs=require('fs');const h=JSON.parse(fs.readFileSync('/state/health.json'));process.exit(h.status==='healthy'&&Date.now()-Date.parse(h.lastSuccessAt)<180000?0:1)
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 90s
+    mem_limit: 384m
+    cpus: 0.5
+    pids_limit: 128
+    logging: *default-logging
+    networks:
+      - dittofeed
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: stage-dittofeed-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${DATABASE_USER:?DATABASE_USER is required}
+      POSTGRES_PASSWORD: ${DATABASE_PASSWORD:?DATABASE_PASSWORD is required}
+      POSTGRES_DB: dittofeed_stage_test
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - pg_isready -U "$$POSTGRES_USER" -d "$$POSTGRES_DB"
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 20s
+    mem_limit: 1024m
+    cpus: 0.75
+    pids_limit: 256
+    logging: *default-logging
+    networks:
+      - dittofeed
+
+  temporal:
+    image: temporalio/auto-setup:1.22.4
+    container_name: stage-dittofeed-temporal
+    restart: unless-stopped
+    environment:
+      DB: postgres12
+      DB_PORT: "5432"
+      POSTGRES_USER: ${DATABASE_USER:?DATABASE_USER is required}
+      POSTGRES_PWD: ${DATABASE_PASSWORD:?DATABASE_PASSWORD is required}
+      POSTGRES_SEEDS: stage-dittofeed-postgres
+      DBNAME: temporal_dittofeed_stage_test
+      VISIBILITY_DBNAME: temporal_dittofeed_stage_test_visibility
+      DEFAULT_NAMESPACE: stage-dittofeed-test
+      DEFAULT_NAMESPACE_RETENTION: "7"
+      DYNAMIC_CONFIG_FILE_PATH: config/dynamicconfig/prod.yaml
+      SQL_MAX_CONNS: "20"
+      SQL_MAX_IDLE_CONNS: "10"
+      SQL_VIS_MAX_CONNS: "10"
+      SQL_VIS_MAX_IDLE_CONNS: "5"
+    volumes:
+      - ./packages/backend-lib/temporal-dynamicconfig:/etc/temporal/config/dynamicconfig:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - tctl --address stage-dittofeed-temporal:7233 cluster health >/dev/null 2>&1
+      interval: 15s
+      timeout: 10s
+      retries: 30
+      start_period: 60s
+    mem_limit: 1536m
+    cpus: 1.0
+    pids_limit: 512
+    logging: *default-logging
+    networks:
+      - dittofeed
+
+  clickhouse:
+    image: clickhouse/clickhouse-server:24.12.6.70-alpine
+    container_name: stage-dittofeed-clickhouse
+    restart: unless-stopped
+    environment:
+      CLICKHOUSE_DB: dittofeed_stage_test
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER:?CLICKHOUSE_USER is required}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:?CLICKHOUSE_PASSWORD is required}
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: "1"
+    volumes:
+      - clickhouse-data:/var/lib/clickhouse
+      - clickhouse-logs:/var/log/clickhouse-server
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - clickhouse-client --user "$$CLICKHOUSE_USER" --password "$$CLICKHOUSE_PASSWORD" --query 'SELECT 1' >/dev/null
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 30s
+    mem_limit: 2048m
+    cpus: 1.0
+    pids_limit: 1024
+    logging: *default-logging
+    networks:
+      - dittofeed
+
+  temporal-ui:
+    image: temporalio/ui:2.22.1
+    container_name: stage-dittofeed-temporal-ui
+    profiles:
+      - diagnostics
+    restart: unless-stopped
+    environment:
+      TEMPORAL_ADDRESS: stage-dittofeed-temporal:7233
+      TEMPORAL_CORS_ORIGINS: http://127.0.0.1:3180
+    ports:
+      - "127.0.0.1:3180:8080"
+    depends_on:
+      temporal:
+        condition: service_healthy
+    mem_limit: 256m
+    cpus: 0.25
+    pids_limit: 256
+    logging: *default-logging
+    networks:
+      - dittofeed
+
+volumes:
+  postgres-data:
+    name: stage-dittofeed-postgres-data
+  clickhouse-data:
+    name: stage-dittofeed-clickhouse-data
+  clickhouse-logs:
+    name: stage-dittofeed-clickhouse-logs
+  selective-stream-state:
+    name: stage-dittofeed-selective-stream-state
+
+networks:
+  dittofeed:
+    name: stage-dittofeed-network
