@@ -167,10 +167,7 @@ export function resolveStageWarehouseMobilePushEligibility({
   return {
     notificationsActive,
     hasUninstalled,
-    mobilePushEligible:
-      notificationsActive === true &&
-      hasUninstalled === false &&
-      hasDeviceToken,
+    mobilePushEligible: notificationsActive === true && hasDeviceToken,
   };
 }
 

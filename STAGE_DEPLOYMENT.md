@@ -38,7 +38,7 @@ cd /home/ubuntu/dittofeed-stage
 ./scripts/stage-deploy.sh
 ```
 
-The script generates `.env.stage` once with mode `0600`. On a fresh database it enables bootstrap for the first healthy start, then recreates Lite with bootstrap disabled. Later runs stay in steady-state mode. The prebuilt `stage-dittofeed-lite:v0.24.0-alpha.17-stage-ui9` image must be loaded before running the script.
+The script generates `.env.stage` once with mode `0600`. On a fresh database it enables bootstrap for the first healthy start, then recreates Lite with bootstrap disabled. Later runs stay in steady-state mode. The prebuilt `stage-dittofeed-lite:v0.24.0-alpha.17-stage-ui10` image must be loaded before running the script.
 
 Open `http://10.50.0.117:3100`. The single-tenant login password is stored in `/home/ubuntu/dittofeed-stage/.env.stage`.
 

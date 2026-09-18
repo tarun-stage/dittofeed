@@ -5,7 +5,7 @@ set -euo pipefail
 compose_file="docker-compose.stage-test.yaml"
 secrets_file=".env.stage"
 required_free_kb=$((1024 * 1024))
-lite_image="stage-dittofeed-lite:v0.24.0-alpha.17-stage-ui9"
+lite_image="stage-dittofeed-lite:v0.24.0-alpha.17-stage-ui10"
 
 if [[ ! -f "$compose_file" ]]; then
   echo "Run this script from the Dittofeed repository root." >&2

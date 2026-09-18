@@ -17,23 +17,33 @@ describe("resolveStageWarehouseMobilePushEligibility", () => {
     });
   });
 
-  it.each([
-    ["inactive", "false"],
-    ["active", "true"],
-    [false, false],
-    [true, true],
-  ])(
-    "blocks delivery for notificationStatus=%p and uninstalledStatus=%p",
-    (notificationStatus, uninstalledStatus) => {
+  it.each(["inactive", false])(
+    "blocks delivery for notificationStatus=%p",
+    (notificationStatus) => {
       expect(
         resolveStageWarehouseMobilePushEligibility({
           notificationStatus,
-          uninstalledStatus,
+          uninstalledStatus: false,
           fallbackNotificationsActive: true,
           fallbackHasUninstalled: false,
           deviceToken: "firebase-token",
         }).mobilePushEligible,
       ).toBe(false);
+    },
+  );
+
+  it.each(["true", true, "uninstalled"])(
+    "ignores has_uninstalled=%p for push eligibility",
+    (uninstalledStatus) => {
+      expect(
+        resolveStageWarehouseMobilePushEligibility({
+          notificationStatus: "active",
+          uninstalledStatus,
+          fallbackNotificationsActive: false,
+          fallbackHasUninstalled: true,
+          deviceToken: "firebase-token",
+        }).mobilePushEligible,
+      ).toBe(true);
     },
   );
 
