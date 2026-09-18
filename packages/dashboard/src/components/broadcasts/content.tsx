@@ -1,4 +1,11 @@
-import { Box, Stack, ToggleButton, ToggleButtonGroup } from "@mui/material";
+import {
+  Box,
+  Stack,
+  TextField,
+  ToggleButton,
+  ToggleButtonGroup,
+  Typography,
+} from "@mui/material";
 import {
   getBroadcastMessageTemplateId,
   getBroadcastMessageTemplateName,
@@ -26,6 +33,51 @@ import WebhookEditor from "../messages/webhookEditor";
 import ResourceSelect from "../resourceSelect";
 import { MobilePushEditor } from "../templateEditor";
 import { BroadcastState } from "./broadcastsShared";
+
+interface WhatsAppTemplatePreview {
+  templateName: string;
+  languageCode: string;
+  message: string;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
+function getWhatsAppTemplatePreview(
+  body: string,
+): WhatsAppTemplatePreview | null {
+  try {
+    const parsed: unknown = JSON.parse(body);
+    if (!isRecord(parsed) || !isRecord(parsed.config)) return null;
+    const { data } = parsed.config;
+    if (!isRecord(data) || !isRecord(data.template)) return null;
+
+    const { namespace: templateName, languageCode } = data.template;
+    if (typeof templateName !== "string" || typeof languageCode !== "string") {
+      return null;
+    }
+
+    const bodyComponent = Array.isArray(data.components)
+      ? data.components.find(
+          (component) =>
+            isRecord(component) &&
+            component.type === "body" &&
+            isRecord(component.body),
+        )
+      : undefined;
+    const message =
+      isRecord(bodyComponent) &&
+      isRecord(bodyComponent.body) &&
+      typeof bodyComponent.body.text === "string"
+        ? bodyComponent.body.text
+        : "Template content is managed in Celetel.";
+
+    return { templateName, languageCode, message };
+  } catch {
+    return null;
+  }
+}
 
 function EmailControls({
   emailContentType,
@@ -113,7 +165,59 @@ function ExistingTemplatePreview({ broadcastId }: { broadcastId: string }) {
           hideEditor
         />
       );
-    case ChannelType.Webhook:
+    case ChannelType.Webhook: {
+      const whatsAppPreview = getWhatsAppTemplatePreview(
+        messageTemplate.definition.body,
+      );
+      if (whatsAppPreview) {
+        return (
+          <Stack
+            spacing={2}
+            sx={{
+              maxWidth: 900,
+              border: 1,
+              borderColor: "divider",
+              borderRadius: 1,
+              p: 2,
+            }}
+          >
+            <Box>
+              <Typography variant="subtitle1">WhatsApp message</Typography>
+              <Typography variant="body2" color="text.secondary">
+                Approved Celetel template selected for this campaign.
+              </Typography>
+            </Box>
+            <Stack direction={{ xs: "column", md: "row" }} spacing={2}>
+              <TextField
+                fullWidth
+                label="Template"
+                value={whatsAppPreview.templateName}
+                InputProps={{ readOnly: true }}
+              />
+              <TextField
+                fullWidth
+                label="Language"
+                value={whatsAppPreview.languageCode}
+                InputProps={{ readOnly: true }}
+              />
+              <TextField
+                fullWidth
+                label="Recipient property"
+                value={messageTemplate.definition.identifierKey}
+                InputProps={{ readOnly: true }}
+              />
+            </Stack>
+            <TextField
+              fullWidth
+              multiline
+              minRows={3}
+              label="Message preview"
+              value={whatsAppPreview.message}
+              InputProps={{ readOnly: true }}
+            />
+          </Stack>
+        );
+      }
       return (
         <WebhookEditor
           templateId={messageTemplateId}
@@ -124,6 +228,7 @@ function ExistingTemplatePreview({ broadcastId }: { broadcastId: string }) {
           hideEditor
         />
       );
+    }
     case ChannelType.MobilePush:
       return (
         <MobilePushEditor
@@ -393,6 +498,7 @@ export default function Content({ state }: { state: BroadcastState }) {
   if (!broadcast) {
     return null;
   }
+  const isWhatsApp = broadcast.config.message.type === ChannelType.Webhook;
   let controls: React.ReactNode;
   if (selectExistingTemplate === "new" && broadcast.messageTemplateId) {
     switch (broadcast.config.message.type) {
@@ -422,22 +528,28 @@ export default function Content({ state }: { state: BroadcastState }) {
       sx={{ height: "100%", width: "100%", flex: 1, minHeight: 0 }}
     >
       <Stack direction="row" spacing={2}>
-        <ToggleButtonGroup
-          value={selectExistingTemplate}
-          exclusive
-          disabled={disabled || selectExistingTemplate === null}
-          onChange={(_, newValue) => {
-            if (newValue !== null) {
-              setSelectExistingTemplate(newValue);
-            }
-            if (newValue === "existing") {
-              broadcastMutation.mutate({ messageTemplateId: null });
-            }
-          }}
-        >
-          <ToggleButton value="existing">Existing Template</ToggleButton>
-          <ToggleButton value="new">New Template</ToggleButton>
-        </ToggleButtonGroup>
+        {isWhatsApp ? (
+          <Typography variant="subtitle1">
+            Approved WhatsApp Template
+          </Typography>
+        ) : (
+          <ToggleButtonGroup
+            value={selectExistingTemplate}
+            exclusive
+            disabled={disabled || selectExistingTemplate === null}
+            onChange={(_, newValue) => {
+              if (newValue !== null) {
+                setSelectExistingTemplate(newValue);
+              }
+              if (newValue === "existing") {
+                broadcastMutation.mutate({ messageTemplateId: null });
+              }
+            }}
+          >
+            <ToggleButton value="existing">Existing Template</ToggleButton>
+            <ToggleButton value="new">New Template</ToggleButton>
+          </ToggleButtonGroup>
+        )}
         {controls}
       </Stack>
       {templateSelect}

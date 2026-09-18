@@ -49,7 +49,7 @@ x-app-environment: &app-environment
 
 services:
   lite:
-    image: stage-dittofeed-lite:v0.24.0-alpha.17-stage-ui11
+    image: stage-dittofeed-lite:v0.24.0-alpha.17-stage-ui12
     container_name: stage-dittofeed-lite
     restart: unless-stopped
     command:
@@ -80,14 +80,14 @@ services:
       retries: 20
       start_period: 90s
     mem_limit: 1024m
-    cpus: 1.0
+    cpus: 2.0
     pids_limit: 512
     logging: *default-logging
     networks:
       - dittofeed
 
   worker:
-    image: stage-dittofeed-lite:v0.24.0-alpha.17-stage-ui11
+    image: stage-dittofeed-lite:v0.24.0-alpha.17-stage-ui12
     container_name: stage-dittofeed-worker
     restart: unless-stopped
     command:
@@ -143,7 +143,7 @@ services:
       - dittofeed
 
   selective-stream:
-    image: stage-dittofeed-lite:v0.24.0-alpha.17-stage-ui11
+    image: stage-dittofeed-lite:v0.24.0-alpha.17-stage-ui12
     container_name: stage-dittofeed-selective-stream
     profiles:
       - streaming
@@ -282,8 +282,8 @@ services:
       timeout: 5s
       retries: 20
       start_period: 30s
-    mem_limit: 2048m
-    cpus: 1.0
+    mem_limit: 6144m
+    cpus: 4.0
     pids_limit: 1024
     logging: *default-logging
     networks:
