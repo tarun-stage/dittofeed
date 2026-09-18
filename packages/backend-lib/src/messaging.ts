@@ -1,7 +1,8 @@
 import { SESv2ServiceException } from "@aws-sdk/client-sesv2";
 import { MessagesMessage as MailChimpMessage } from "@mailchimp/mailchimp_transactional";
 import { MailDataRequired } from "@sendgrid/mail";
-import axios, { AxiosError, AxiosHeaders } from "axios";
+import { Type } from "@sinclair/typebox";
+import axios, { AxiosError, AxiosHeaders, AxiosResponse } from "axios";
 import { randomUUID } from "crypto";
 import { and, eq, SQL } from "drizzle-orm";
 import { toMjml } from "emailo/src/toMjml";
@@ -25,7 +26,9 @@ import { validate as validateUuid } from "uuid";
 
 import { submitBatch } from "./apps/batch";
 import { getObject, storage } from "./blobStorage";
+import config from "./config";
 import { MESSAGE_METADATA_FIELDS } from "./constants";
+import { generateDigest } from "./crypto";
 import { db, TxQueryError, txQueryResult } from "./db";
 import {
   defaultEmailProvider as dbDefaultEmailProvider,
@@ -42,6 +45,7 @@ import {
   sendMail as sendMailAmazonSes,
   SesMailData,
 } from "./destinations/amazonses";
+import { sendNotification as sendFcmNotification } from "./destinations/fcm";
 import { sendMail as sendMailMailchimp } from "./destinations/mailchimp";
 import { sendMail as sendMailPostMark } from "./destinations/postmark";
 import {
@@ -64,9 +68,7 @@ import {
   sendGmailEmail,
   SendGmailEmailParams,
 } from "./gmail";
-import config from "./config";
 import { renderLiquid } from "./liquid";
-import { storeEmailForViewInBrowser } from "./viewInBrowser";
 import logger from "./logger";
 import {
   constructUnsubscribeHeaders,
@@ -96,6 +98,7 @@ import {
   EventType,
   InternalEventType,
   KnownBatchTrackData,
+  MessageMobilePushSuccess,
   MessageSendFailure,
   MessageSkippedType,
   MessageTags,
@@ -131,6 +134,7 @@ import {
 } from "./types";
 import { UserPropertyAssignments } from "./userProperties";
 import { getUsers } from "./users";
+import { storeEmailForViewInBrowser } from "./viewInBrowser";
 import { isWorkspaceOccupantType } from "./workspaceOccupantSettings";
 
 export function enrichMessageTemplate({
@@ -531,7 +535,7 @@ export type SendMessageParametersSms = SendMessageParametersBase &
 export interface SendMessageParametersMobilePush
   extends SendMessageParametersBase {
   channel: (typeof ChannelType)["MobilePush"];
-  provider?: MobilePushProviderType;
+  providerOverride?: MobilePushProviderType;
 }
 
 export interface SendMessageParametersWebhook
@@ -2328,14 +2332,23 @@ export async function sendWebhook({
       renderedSecret?.responseType ?? renderedConfig.responseType;
     const url = renderedSecret?.url ?? renderedConfig.url;
 
-    const response = await axios.request({
-      url,
-      method,
-      params,
-      data,
-      responseType,
-      headers: renderedHeaders,
-    });
+    const response =
+      // eslint-disable-next-line @typescript-eslint/no-use-before-define
+      url === CELETEL_CAMPAIGN_TRANSPORT
+        ? // eslint-disable-next-line @typescript-eslint/no-use-before-define
+          await sendCeletelCampaign({
+            configData: renderedConfig.data,
+            secretData: renderedSecret?.data,
+            messageTags,
+          })
+        : await axios.request({
+            url,
+            method,
+            params,
+            data,
+            responseType,
+            headers: renderedHeaders,
+          });
 
     const axiosHeaders =
       response.headers instanceof AxiosHeaders
@@ -2383,6 +2396,416 @@ export async function sendWebhook({
   }
 }
 
+const CELETEL_CAMPAIGN_TRANSPORT = "celetel://campaign";
+const CELETEL_LOGIN_URL = "https://one.celetel.com/api/auth/login";
+const CELETEL_CAMPAIGN_URL =
+  "https://one.celetel.com/api/waba/campaign/create-campaign";
+
+const CeletelCampaignData = Type.Object({
+  to: Type.String(),
+  templateName: Type.String(),
+  languageCode: Type.String(),
+  components: Type.Optional(Type.Array(Type.Unknown())),
+  campaignName: Type.Optional(Type.String()),
+});
+
+const CeletelCampaignSecret = Type.Object({
+  email: Type.String(),
+  password: Type.String(),
+  wabaId: Type.String(),
+});
+
+const CeletelLoginResponse = Type.Object({
+  token: Type.Optional(Type.String()),
+  access_token: Type.Optional(Type.String()),
+  data: Type.Optional(
+    Type.Object({
+      token: Type.Optional(Type.String()),
+    }),
+  ),
+});
+
+const celetelTokenCache = new Map<
+  string,
+  { token: string; expiresAt: number }
+>();
+const celetelTokenRequests = new Map<string, Promise<string>>();
+
+async function getCeletelToken({
+  email,
+  password,
+}: {
+  email: string;
+  password: string;
+}): Promise<string> {
+  const cached = celetelTokenCache.get(email);
+  if (cached && cached.expiresAt > Date.now()) return cached.token;
+
+  const pending = celetelTokenRequests.get(email);
+  if (pending) return pending;
+
+  const request = axios
+    .request({
+      url: CELETEL_LOGIN_URL,
+      method: "POST",
+      data: { email, password },
+      timeout: 8000,
+      headers: { "Content-Type": "application/json" },
+    })
+    .then((response) => {
+      const parsed = schemaValidateWithErr(response.data, CeletelLoginResponse);
+      if (parsed.isErr()) {
+        throw new Error("Celetel login returned an invalid response");
+      }
+      const token =
+        parsed.value.token ??
+        parsed.value.data?.token ??
+        parsed.value.access_token;
+      if (!token) throw new Error("Celetel login returned no token");
+      celetelTokenCache.set(email, {
+        token,
+        expiresAt: Date.now() + 50 * 60 * 1000,
+      });
+      return token;
+    })
+    .finally(() => celetelTokenRequests.delete(email));
+  celetelTokenRequests.set(email, request);
+  return request;
+}
+
+function normalizeCeletelPhone(phone: string): string {
+  const digits = phone.replace(/\D/g, "");
+  if (/^[6-9]\d{9}$/.test(digits)) return `91${digits}`;
+  if (/^0[6-9]\d{9}$/.test(digits)) return `91${digits.slice(1)}`;
+  if (/^91[6-9]\d{9}$/.test(digits)) return digits;
+  throw new Error("WhatsApp recipient must be a valid Indian mobile number");
+}
+
+async function sendCeletelCampaign({
+  configData,
+  secretData,
+  messageTags,
+}: {
+  configData: unknown;
+  secretData: unknown;
+  messageTags?: MessageTags;
+}): Promise<AxiosResponse> {
+  const configResult = schemaValidateWithErr(configData, CeletelCampaignData);
+  const secretResult = schemaValidateWithErr(secretData, CeletelCampaignSecret);
+  if (configResult.isErr() || secretResult.isErr()) {
+    throw new Error("Celetel webhook configuration is invalid");
+  }
+
+  const token = await getCeletelToken(secretResult.value);
+  const campaignName = (
+    configResult.value.campaignName ??
+    `dittofeed-${messageTags?.messageId ?? randomUUID()}`
+  )
+    .replace(/[^a-zA-Z0-9_-]+/g, "-")
+    .slice(0, 120);
+  const form = new URLSearchParams({
+    waba_id: secretResult.value.wabaId,
+    campaignName,
+    message: JSON.stringify({
+      name: configResult.value.templateName,
+      language: { code: configResult.value.languageCode },
+      components: configResult.value.components ?? [],
+    }),
+    numbers: JSON.stringify([normalizeCeletelPhone(configResult.value.to)]),
+  });
+  const response = await axios.request({
+    url: CELETEL_CAMPAIGN_URL,
+    method: "POST",
+    data: form.toString(),
+    timeout: 30000,
+    headers: {
+      Authorization: `Bearer ${token}`,
+      "Content-Type": "application/x-www-form-urlencoded",
+      Accept: "application/json",
+    },
+  });
+  const providerResponse = schemaValidateWithErr(
+    response.data,
+    Type.Object({ success: Type.Optional(Type.Boolean()) }),
+  );
+  if (providerResponse.isOk() && providerResponse.value.success === false) {
+    throw new Error("Celetel rejected the WhatsApp campaign");
+  }
+  return response;
+}
+
+function publicPushImageUrl(imageUrl?: string): string | undefined {
+  if (!imageUrl) return undefined;
+  try {
+    const parsed = new URL(imageUrl);
+    const hostname = parsed.hostname.toLowerCase();
+    const isPrivateIpv4 =
+      /^10\./.test(hostname) ||
+      /^127\./.test(hostname) ||
+      /^169\.254\./.test(hostname) ||
+      /^192\.168\./.test(hostname) ||
+      /^172\.(1[6-9]|2\d|3[01])\./.test(hostname);
+    if (
+      parsed.protocol !== "https:" ||
+      hostname === "localhost" ||
+      hostname === "::1" ||
+      isPrivateIpv4
+    ) {
+      return undefined;
+    }
+    return parsed.toString();
+  } catch {
+    return undefined;
+  }
+}
+
+function mobilePushReceiptUrl(workspaceId: string): string | undefined {
+  const base = process.env.DITTOFEED_MOBILE_EVENTS_URL?.trim();
+  if (!base) return undefined;
+  try {
+    const url = new URL(base);
+    url.searchParams.set("workspaceId", workspaceId);
+    return url.toString();
+  } catch {
+    return undefined;
+  }
+}
+
+export async function sendMobilePush({
+  workspaceId,
+  templateId,
+  userId,
+  userPropertyAssignments,
+  subscriptionGroupDetails,
+  useDraft,
+  messageTags,
+  isPreview,
+  providerOverride,
+}: Omit<
+  SendMessageParametersMobilePush,
+  "channel"
+>): Promise<BackendMessageSendResult> {
+  const [getSendModelsResult, secret] = await Promise.all([
+    getSendMessageModels({
+      workspaceId,
+      templateId,
+      channel: ChannelType.MobilePush,
+      useDraft,
+      subscriptionGroupDetails,
+    }),
+    db().query.secret.findFirst({
+      where: and(
+        eq(dbSecret.workspaceId, workspaceId),
+        eq(dbSecret.name, SecretNames.Fcm),
+      ),
+    }),
+  ]);
+  if (getSendModelsResult.isErr()) {
+    return err(getSendModelsResult.error);
+  }
+
+  const { messageTemplateDefinition } = getSendModelsResult.value;
+  if (messageTemplateDefinition.type !== ChannelType.MobilePush) {
+    return err({
+      type: InternalEventType.BadWorkspaceConfiguration,
+      variant: {
+        type: BadWorkspaceConfigurationType.MessageTemplateMisconfigured,
+        message: "message template is not a mobile push template",
+      },
+    });
+  }
+
+  const identifierKey = CHANNEL_IDENTIFIERS[ChannelType.MobilePush];
+  const renderedValuesResult = renderValues({
+    userProperties: userPropertyAssignments,
+    identifierKey,
+    subscriptionGroupId: subscriptionGroupDetails?.id,
+    workspaceId,
+    tags: messageTags,
+    isPreview,
+    templates: {
+      title: { contents: messageTemplateDefinition.title },
+      body: { contents: messageTemplateDefinition.body },
+      imageUrl: { contents: messageTemplateDefinition.imageUrl },
+      deeplink: { contents: messageTemplateDefinition.deeplink },
+      channelId: {
+        contents: messageTemplateDefinition.android?.notification.channelId,
+      },
+    },
+  });
+  if (renderedValuesResult.isErr()) {
+    const { error, field } = renderedValuesResult.error;
+    return err({
+      type: InternalEventType.BadWorkspaceConfiguration,
+      variant: {
+        type: BadWorkspaceConfigurationType.MessageTemplateRenderError,
+        field,
+        error,
+      },
+    });
+  }
+
+  const rawIdentifier = userPropertyAssignments[identifierKey];
+  const to = typeof rawIdentifier === "string" ? rawIdentifier : null;
+  if (!to) {
+    return err({
+      type: InternalEventType.MessageSkipped,
+      variant: {
+        type: MessageSkippedType.MissingIdentifier,
+        identifierKey,
+      },
+    });
+  }
+
+  const provider = providerOverride ?? MobilePushProviderType.Firebase;
+  const { title, body, imageUrl, deeplink, channelId } =
+    renderedValuesResult.value;
+  if (provider === MobilePushProviderType.Test) {
+    return ok({
+      type: InternalEventType.MessageSent,
+      variant: {
+        type: ChannelType.MobilePush,
+        provider: { type: MobilePushProviderType.Test },
+        to,
+        title,
+        body,
+        imageUrl,
+      } satisfies MessageMobilePushSuccess,
+    });
+  }
+
+  const key =
+    secret?.value ??
+    (secret?.configValue ? JSON.stringify(secret.configValue) : null);
+  if (!key) {
+    return err({
+      type: InternalEventType.BadWorkspaceConfiguration,
+      variant: {
+        type: BadWorkspaceConfigurationType.MessageServiceProviderNotFound,
+      },
+    });
+  }
+
+  try {
+    const routingKeys = [
+      "bundleIdentifier",
+      "packageName",
+      "appId",
+      "app_id",
+      "appFlavor",
+    ].flatMap((property) => {
+      const value = userPropertyAssignments[property];
+      return typeof value === "string" && value ? [value] : [];
+    });
+    const messageId = messageTags?.messageId ?? randomUUID();
+    const pushUserId = userId ?? "";
+    const safeImageUrl = publicPushImageUrl(imageUrl);
+    const receiptToken = generateDigest({
+      rawBody: `${workspaceId}:${messageId}:${pushUserId}`,
+      sharedSecret: key,
+    });
+    const legacyReceiptToken = generateDigest({
+      rawBody: `${workspaceId}:${messageId}`,
+      sharedSecret: key,
+    });
+    const eventsUrl = mobilePushReceiptUrl(workspaceId);
+    const data: Record<string, string> = {
+      wzrk_pn: "true",
+      wzrk_cid: channelId || "channel1",
+      wzrk_id: `${messageId}.${legacyReceiptToken}`,
+      campaign_id: `c_df_${workspaceId}`,
+      source: "dittofeed",
+      notification_type: "standard",
+      title: title ?? "",
+      message: body ?? "",
+      nt: title ?? "",
+      nm: body ?? "",
+      dittofeedMessageId: messageId,
+      dittofeedUserId: pushUserId,
+      dittofeedReceiptToken: receiptToken,
+      ...(messageTags?.journeyId
+        ? { dittofeedJourneyId: messageTags.journeyId }
+        : {}),
+      ...(messageTags?.broadcastId
+        ? { dittofeedBroadcastId: messageTags.broadcastId }
+        : {}),
+      ...(messageTags?.templateId
+        ? { dittofeedTemplateId: messageTags.templateId }
+        : {}),
+      ...(eventsUrl ? { dittofeedEventsUrl: eventsUrl } : {}),
+      ...(deeplink
+        ? {
+            dittofeedDeeplink: deeplink,
+            deeplink,
+            dl_stage: deeplink,
+            wzrk_dl: deeplink,
+          }
+        : {}),
+      ...(safeImageUrl
+        ? { thumbnail: safeImageUrl, wzrk_bp: safeImageUrl }
+        : {}),
+    };
+    const apnsAlert = {
+      ...(title ? { title } : {}),
+      ...(body ? { body } : {}),
+    };
+    const result = await sendFcmNotification({
+      key,
+      routingKeys,
+      token: to,
+      android: { priority: "high" },
+      apns: {
+        headers: { "apns-priority": "10" },
+        payload: {
+          aps: {
+            alert: apnsAlert,
+            sound: "default",
+            mutableContent: true,
+            category: "stage_engage_default",
+          },
+        },
+        ...(safeImageUrl ? { fcmOptions: { imageUrl: safeImageUrl } } : {}),
+      },
+      data,
+    });
+    if (result.isErr()) {
+      return err({
+        type: InternalEventType.BadWorkspaceConfiguration,
+        variant: {
+          type: BadWorkspaceConfigurationType.MessageServiceProviderMisconfigured,
+          message: result.error.message,
+        },
+      });
+    }
+    return ok({
+      type: InternalEventType.MessageSent,
+      variant: {
+        type: ChannelType.MobilePush,
+        provider: {
+          type: MobilePushProviderType.Firebase,
+          messageId: result.value,
+        },
+        to,
+        title,
+        body,
+        imageUrl,
+      } satisfies MessageMobilePushSuccess,
+    });
+  } catch (error) {
+    return err({
+      type: InternalEventType.MessageFailure,
+      variant: {
+        type: ChannelType.MobilePush,
+        provider: {
+          type: MobilePushProviderType.Firebase,
+          message:
+            error instanceof Error ? error.message : "Firebase send failed",
+        },
+      },
+    });
+  }
+}
+
 export type Sender = (
   params: SendMessageParameters,
 ) => Promise<BackendMessageSendResult>;
@@ -2412,7 +2835,7 @@ export async function sendMessage(
       case ChannelType.Sms:
         return sendSms(params);
       case ChannelType.MobilePush:
-        throw new Error("not implemented");
+        return sendMobilePush(params);
       case ChannelType.Webhook:
         return sendWebhook(params);
     }
@@ -2495,7 +2918,7 @@ export async function testTemplate(
     case ChannelType.MobilePush: {
       sendMessageParams = {
         ...baseSendMessageParams,
-        provider: request.provider,
+        providerOverride: request.provider,
         channel: request.channel,
       };
       break;

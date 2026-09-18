@@ -27,9 +27,9 @@ x-app-environment: &app-environment
   PASSWORD: ${PASSWORD:?PASSWORD is required}
   SECRET_KEY: ${SECRET_KEY:?SECRET_KEY is required}
   SESSION_COOKIE_SECURE: "false"
-  DASHBOARD_URL: http://10.50.0.245:3100
-  DASHBOARD_API_BASE: http://10.50.0.245:3100
-  ALLOWED_ORIGINS: http://10.50.0.245:3100
+  DASHBOARD_URL: http://10.50.0.117:3100
+  DASHBOARD_API_BASE: http://10.50.0.117:3100
+  ALLOWED_ORIGINS: http://10.50.0.117:3100
   WRITE_MODE: ch-async
   BOOTSTRAP: ${BOOTSTRAP:-false}
   BOOTSTRAP_SAFE: "true"
@@ -49,7 +49,7 @@ x-app-environment: &app-environment
 
 services:
   lite:
-    image: stage-dittofeed-lite:v0.24.0-alpha.17-stage-ui3
+    image: stage-dittofeed-lite:v0.24.0-alpha.17-stage-ui9
     container_name: stage-dittofeed-lite
     restart: unless-stopped
     command:
@@ -61,7 +61,7 @@ services:
       <<: *app-environment
       ENABLE_WORKER: "false"
     ports:
-      - "10.50.0.245:3100:3000"
+      - "10.50.0.117:3100:3000"
     depends_on:
       postgres:
         condition: service_healthy
@@ -87,7 +87,7 @@ services:
       - dittofeed
 
   worker:
-    image: stage-dittofeed-lite:v0.24.0-alpha.17-stage
+    image: stage-dittofeed-lite:v0.24.0-alpha.17-stage-ui9
     container_name: stage-dittofeed-worker
     restart: unless-stopped
     command:
@@ -119,7 +119,7 @@ services:
       CELETEL_WEBHOOK_KEY: ${CELETEL_WEBHOOK_KEY:?CELETEL_WEBHOOK_KEY is required}
       NGINX_ENVSUBST_FILTER: CELETEL_WEBHOOK_KEY
     ports:
-      - "10.50.0.245:18080:8080"
+      - "10.50.0.117:18080:8080"
     volumes:
       - ./ingress-nginx.conf.template:/etc/nginx/templates/default.conf.template:ro
     depends_on:
@@ -143,7 +143,7 @@ services:
       - dittofeed
 
   selective-stream:
-    image: stage-dittofeed-lite:v0.24.0-alpha.17-stage
+    image: stage-dittofeed-lite:v0.24.0-alpha.17-stage-ui9
     container_name: stage-dittofeed-selective-stream
     profiles:
       - streaming

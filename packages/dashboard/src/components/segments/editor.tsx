@@ -60,6 +60,7 @@ import {
   SegmentWithinOperator,
   SubscriptionGroupSegmentNode,
   SubscriptionGroupType,
+  TimeOperator,
   TraitSegmentNode,
 } from "isomorphic-lib/src/types";
 import React, {
@@ -111,6 +112,8 @@ interface SegmentEditorState {
 interface SegmentEditorContextType {
   state: SegmentEditorState;
   setState: Updater<SegmentEditorState>;
+  allowedNodeTypes?: readonly SegmentNodeType[];
+  inputWidth: string | number;
 }
 
 const SegmentEditorContext = React.createContext<
@@ -523,8 +526,8 @@ const subscriptionGroupGroupedOption = {
 
 const performedOption = {
   id: SegmentNodeType.Performed,
-  group: "User Data",
-  label: "User Performed",
+  group: "Past behavior",
+  label: "Users who performed an event",
 };
 
 const randomBucketOption = {
@@ -1356,8 +1359,11 @@ function LastPerformedSelect({ node }: { node: LastPerformedSegmentNode }) {
 }
 
 function PerformedSelect({ node }: { node: PerformedSegmentNode }) {
-  const { state, setState } = useSegmentEditorContext();
+  const { state, setState, inputWidth } = useSegmentEditorContext();
   const { disabled } = state;
+  const isNotPerformed =
+    (node.timesOperator === RelationalOperators.LessThan && node.times === 1) ||
+    (node.timesOperator === RelationalOperators.Equals && node.times === 0);
 
   const handleEventNameChange = (newEvent: string) => {
     updateEditableSegmentNodeData(setState, node.id, (n) => {
@@ -1388,26 +1394,11 @@ function PerformedSelect({ node }: { node: PerformedSegmentNode }) {
   const handleAddProperty = () => {
     updateEditableSegmentNodeData(setState, node.id, (n) => {
       if (n.type === SegmentNodeType.Performed) {
-        let propertyPath: string | null = null;
-        // put arbtitrary limit on the number of properties
-        for (let i = 0; i < 100; i++) {
-          const propertyCount = n.properties?.length ?? 0;
-          const prospectivePath = `myPropertyPath${propertyCount + 1}`;
-          if (!n.properties?.find((p) => p.path === prospectivePath)) {
-            propertyPath = prospectivePath;
-            break;
-          }
-        }
-        if (propertyPath) {
-          n.properties = n.properties ?? [];
-          n.properties.push({
-            path: propertyPath,
-            operator: {
-              type: SegmentOperatorType.Equals,
-              value: "myPropertyValue",
-            },
-          });
-        }
+        n.properties = n.properties ?? [];
+        n.properties.push({
+          path: "",
+          operator: { type: SegmentOperatorType.Equals, value: "" },
+        });
       }
     });
   };
@@ -1415,6 +1406,9 @@ function PerformedSelect({ node }: { node: PerformedSegmentNode }) {
     updateEditableSegmentNodeData(setState, node.id, (n) => {
       if (n.type === SegmentNodeType.Performed) {
         n.withinSeconds = n.withinSeconds ?? 5 * 60;
+        n.timeOperator = TimeOperator.Within;
+        n.absoluteTimestamp = undefined;
+        n.absoluteTimestampEnd = undefined;
       }
     });
   };
@@ -1486,6 +1480,7 @@ function PerformedSelect({ node }: { node: PerformedSegmentNode }) {
             disabled={disabled}
             label="Property Value"
             onChange={handlePropertyValueChange}
+            sx={{ width: inputWidth }}
             value={property.operator.value}
             InputLabelProps={{
               shrink: true,
@@ -1522,6 +1517,7 @@ function PerformedSelect({ node }: { node: PerformedSegmentNode }) {
               type: "number",
             }}
             onChange={handlePropertyValueChange}
+            sx={{ width: inputWidth }}
             value={property.operator.value}
             InputLabelProps={{
               shrink: true,
@@ -1558,6 +1554,7 @@ function PerformedSelect({ node }: { node: PerformedSegmentNode }) {
               type: "number",
             }}
             onChange={handlePropertyValueChange}
+            sx={{ width: inputWidth }}
             value={property.operator.value}
             InputLabelProps={{
               shrink: true,
@@ -1590,7 +1587,7 @@ function PerformedSelect({ node }: { node: PerformedSegmentNode }) {
           event={node.event}
           property={property.path}
           onPropertyChange={handlePropertyPathChange}
-          sx={{ width: selectorWidth }}
+          sx={{ width: inputWidth }}
         />
         <Select
           disabled={disabled}
@@ -1661,32 +1658,54 @@ function PerformedSelect({ node }: { node: PerformedSegmentNode }) {
   return (
     <Stack direction="column" spacing={2}>
       <Stack direction="row" spacing={1} sx={{ alignItems: "center" }}>
+        <Select
+          disabled={disabled}
+          value={isNotPerformed ? "didNot" : "did"}
+          onChange={(e) => {
+            updateEditableSegmentNodeData(setState, node.id, (n) => {
+              if (n.type === SegmentNodeType.Performed) {
+                n.timesOperator =
+                  e.target.value === "didNot"
+                    ? RelationalOperators.LessThan
+                    : RelationalOperators.GreaterThanOrEqual;
+                n.times = 1;
+              }
+            });
+          }}
+        >
+          <MenuItem value="did">Did</MenuItem>
+          <MenuItem value="didNot">Have Not Done</MenuItem>
+        </Select>
         <EventNamesAutocomplete
           disabled={disabled}
           event={node.event}
           onEventChange={handleEventNameChange}
-          sx={{ width: selectorWidth }}
+          sx={{ width: inputWidth }}
         />
-        <Select
-          onChange={handleTimesOperatorChange}
-          disabled={disabled}
-          value={node.timesOperator ?? RelationalOperators.Equals}
-        >
-          {relationalOperatorNames.map(([operator, label]) => (
-            <MenuItem key={operator} value={operator}>
-              {label}
-            </MenuItem>
-          ))}
-        </Select>
-        <TextField
-          disabled={disabled}
-          label="Times Performed"
-          InputProps={{
-            type: "number",
-          }}
-          value={String(node.times ?? 1)}
-          onChange={handleEventTimesChange}
-        />
+        {!isNotPerformed && (
+          <Select
+            onChange={handleTimesOperatorChange}
+            disabled={disabled}
+            value={node.timesOperator ?? RelationalOperators.Equals}
+          >
+            {relationalOperatorNames.map(([operator, label]) => (
+              <MenuItem key={operator} value={operator}>
+                {label}
+              </MenuItem>
+            ))}
+          </Select>
+        )}
+        {!isNotPerformed && (
+          <TextField
+            disabled={disabled}
+            label="Times Performed"
+            InputProps={{
+              type: "number",
+            }}
+            value={String(node.times ?? 1)}
+            onChange={handleEventTimesChange}
+          />
+        )}
         <Button
           disabled={disabled}
           variant="contained"
@@ -1704,6 +1723,11 @@ function PerformedSelect({ node }: { node: PerformedSegmentNode }) {
       </Stack>
       {propertyRows?.length ? <SubtleHeader>Properties</SubtleHeader> : null}
       {propertyRows}
+      {node.timeOperator === TimeOperator.BetweenAbsolute && (
+        <Typography variant="body2" color="text.secondary">
+          Event date: {node.absoluteTimestamp} to {node.absoluteTimestampEnd}
+        </Typography>
+      )}
       {withinEl}
     </Stack>
   );
@@ -2767,7 +2791,8 @@ function SegmentNodeComponent({
   parentId?: string;
   label?: Label;
 }) {
-  const { state, setState } = useSegmentEditorContext();
+  const { state, setState, allowedNodeTypes, inputWidth } =
+    useSegmentEditorContext();
   const { disabled, editedSegment } = state;
   const nodeById = useMemo(
     () =>
@@ -2784,12 +2809,14 @@ function SegmentNodeComponent({
     () =>
       SEGMENT_OPTIONS.filter(
         (opt) =>
-          isRoot ||
-          (opt.id !== SegmentNodeType.Manual &&
-            opt.id !== SegmentNodeType.KeyedPerformed &&
-            opt.id !== SegmentNodeType.Everyone),
+          (allowedNodeTypes === undefined ||
+            allowedNodeTypes.includes(opt.id)) &&
+          (isRoot ||
+            (opt.id !== SegmentNodeType.Manual &&
+              opt.id !== SegmentNodeType.KeyedPerformed &&
+              opt.id !== SegmentNodeType.Everyone)),
       ),
-    [isRoot],
+    [allowedNodeTypes, isRoot],
   );
 
   if (
@@ -2806,7 +2833,7 @@ function SegmentNodeComponent({
 
   const condition = keyedSegmentOptions[node.type];
   const conditionSelect = (
-    <Box sx={{ width: selectorWidth }}>
+    <Box sx={{ width: inputWidth }}>
       <Autocomplete
         value={condition}
         groupBy={(option) => option.group}
@@ -3002,6 +3029,8 @@ export interface SegmentEditorProps {
   disabled?: boolean;
   segmentId: string;
   onSegmentChange?: (segment: SegmentResource) => void;
+  allowedNodeTypes?: readonly SegmentNodeType[];
+  inputWidth?: string | number;
 }
 
 export default function SegmentEditor({
@@ -3009,6 +3038,8 @@ export default function SegmentEditor({
   disabled,
   segmentId,
   onSegmentChange,
+  allowedNodeTypes,
+  inputWidth = selectorWidth,
 }: SegmentEditorProps) {
   const theme = useTheme();
   const { data: segment, isError, isPending } = useSegmentQuery(segmentId);
@@ -3076,8 +3107,10 @@ export default function SegmentEditor({
     return {
       state,
       setState: setNonNullState,
+      allowedNodeTypes,
+      inputWidth,
     };
-  }, [state, setState]);
+  }, [allowedNodeTypes, inputWidth, state, setState]);
 
   if (!segment || isError || isPending || !contextValue || !state) {
     return null;

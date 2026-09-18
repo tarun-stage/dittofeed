@@ -58,6 +58,7 @@ import {
   MobilePushProviderType,
   RenderMessageTemplateRequest,
   RenderMessageTemplateRequestContents,
+  RenderMessageTemplateType,
   SmsProviderType,
   UserPropertyAssignments,
   UserPropertyResource,
@@ -1483,5 +1484,204 @@ export default function TemplateEditor({
         {preview}
       </Dialog>
     </>
+  );
+}
+
+export function MobilePushEditor({
+  templateId,
+  hideTitle,
+  hidePublisher,
+  disabled,
+  member,
+  mode,
+  defaultIsUserPropertiesMinimised,
+  hideUserPropertiesPanel,
+  hideEditor,
+}: {
+  templateId: string;
+  hideTitle?: boolean;
+  hidePublisher?: boolean;
+  disabled?: boolean;
+  member?: WorkspaceMemberResource;
+  mode?: TemplateEditorMode;
+  defaultIsUserPropertiesMinimised?: boolean;
+  hideUserPropertiesPanel?: boolean;
+  hideEditor?: boolean;
+}) {
+  const draftToPreview: DraftToPreview = (definition) => {
+    if (definition.type !== ChannelType.MobilePush) {
+      throw new Error("Invalid channel type");
+    }
+    return {
+      title: {
+        type: RenderMessageTemplateType.PlainText,
+        value: definition.title ?? "",
+      },
+      body: {
+        type: RenderMessageTemplateType.PlainText,
+        value: definition.body ?? "",
+      },
+      imageUrl: {
+        type: RenderMessageTemplateType.PlainText,
+        value: definition.imageUrl ?? "",
+      },
+      deeplink: {
+        type: RenderMessageTemplateType.PlainText,
+        value: definition.deeplink ?? "",
+      },
+      channelId: {
+        type: RenderMessageTemplateType.PlainText,
+        value: definition.android?.notification.channelId ?? "",
+      },
+    };
+  };
+
+  return (
+    <TemplateEditor
+      templateId={templateId}
+      channel={ChannelType.MobilePush}
+      member={member}
+      disabled={disabled}
+      hideTitle={hideTitle}
+      hidePublisher={hidePublisher}
+      renderEditorHeader={() => null}
+      renderEditorBody={({ draft, setDraft }) => {
+        if (draft.type !== ChannelType.MobilePush) return null;
+        return (
+          <Stack spacing={2} sx={{ padding: 2 }}>
+            <TextField
+              label="Notification title"
+              value={draft.title ?? ""}
+              disabled={disabled}
+              onChange={(event) =>
+                setDraft((definition) => {
+                  if (definition.type === ChannelType.MobilePush) {
+                    definition.title = event.target.value;
+                  }
+                  return definition;
+                })
+              }
+            />
+            <TextField
+              label="Notification body"
+              value={draft.body ?? ""}
+              disabled={disabled}
+              multiline
+              minRows={4}
+              onChange={(event) =>
+                setDraft((definition) => {
+                  if (definition.type === ChannelType.MobilePush) {
+                    definition.body = event.target.value;
+                  }
+                  return definition;
+                })
+              }
+            />
+            <TextField
+              label="Image URL"
+              value={draft.imageUrl ?? ""}
+              disabled={disabled}
+              onChange={(event) =>
+                setDraft((definition) => {
+                  if (definition.type === ChannelType.MobilePush) {
+                    definition.imageUrl =
+                      event.target.value === ""
+                        ? undefined
+                        : event.target.value;
+                  }
+                  return definition;
+                })
+              }
+            />
+            <TextField
+              label="Android channel ID"
+              value={draft.android?.notification.channelId ?? ""}
+              disabled={disabled}
+              onChange={(event) =>
+                setDraft((definition) => {
+                  if (definition.type === ChannelType.MobilePush) {
+                    definition.android = {
+                      notification: {
+                        channelId:
+                          event.target.value === ""
+                            ? undefined
+                            : event.target.value,
+                      },
+                    };
+                  }
+                  return definition;
+                })
+              }
+            />
+            <TextField
+              label="Deeplink"
+              value={draft.deeplink ?? ""}
+              disabled={disabled}
+              onChange={(event) =>
+                setDraft((definition) => {
+                  if (definition.type === ChannelType.MobilePush) {
+                    definition.deeplink =
+                      event.target.value === ""
+                        ? undefined
+                        : event.target.value;
+                  }
+                  return definition;
+                })
+              }
+            />
+          </Stack>
+        );
+      }}
+      renderPreviewHeader={() => null}
+      renderPreviewBody={({ rendered }) => (
+        <Box sx={{ padding: 2 }}>
+          <Box
+            sx={{
+              border: 1,
+              borderColor: "divider",
+              borderRadius: 2,
+              padding: 2,
+              maxWidth: 420,
+            }}
+          >
+            {rendered.imageUrl ? (
+              <Box
+                component="img"
+                src={rendered.imageUrl}
+                alt="Notification"
+                sx={{ width: "100%", borderRadius: 1, marginBottom: 1 }}
+              />
+            ) : null}
+            <Typography variant="subtitle1" fontWeight={600}>
+              {rendered.title === "" ? "Notification title" : rendered.title}
+            </Typography>
+            <Typography variant="body2" color="text.secondary">
+              {rendered.body === "" ? "Notification body" : rendered.body}
+            </Typography>
+          </Box>
+        </Box>
+      )}
+      draftToPreview={draftToPreview}
+      fieldToReadable={(field) => {
+        switch (field) {
+          case "title":
+            return "Title";
+          case "body":
+            return "Body";
+          case "imageUrl":
+            return "Image URL";
+          case "channelId":
+            return "Android channel ID";
+          case "deeplink":
+            return "Deeplink";
+          default:
+            return null;
+        }
+      }}
+      mode={mode}
+      defaultIsUserPropertiesMinimised={defaultIsUserPropertiesMinimised}
+      hideUserPropertiesPanel={hideUserPropertiesPanel}
+      hideEditor={hideEditor}
+    />
   );
 }

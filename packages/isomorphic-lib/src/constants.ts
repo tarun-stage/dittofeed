@@ -87,6 +87,14 @@ export const MESSAGE_EVENTS = [
   InternalEventType.EmailMarkedSpam,
   InternalEventType.SmsDelivered,
   InternalEventType.SmsFailed,
+  InternalEventType.MobilePushDelivered,
+  InternalEventType.MobilePushClicked,
+  InternalEventType.WebhookProcessed,
+  InternalEventType.WebhookSent,
+  InternalEventType.WebhookDelivered,
+  InternalEventType.WebhookRead,
+  InternalEventType.WebhookClicked,
+  InternalEventType.WebhookFailed,
 ];
 
 export enum SourceType {

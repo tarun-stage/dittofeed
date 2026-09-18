@@ -1,8 +1,8 @@
 # STAGE Dittofeed test deployment
 
-Dittofeed owns its database, Docker network, provider calls, event processing, and message delivery. The current public route is temporary: requests to `engage.stage.in/dittofeed/...` and Celetel callbacks to `engage.stage.in/api/whatsapp/dlr` still transit the Stage Engage Nginx container before reaching the Dittofeed ingress on port `18080`.
+Dittofeed runs on `10.50.0.117` and owns its database, Docker network, provider calls, event processing, and message delivery. The current public route is temporary: requests to `engage.stage.in/dittofeed/...` and Celetel callbacks to `engage.stage.in/api/whatsapp/dlr` still reach `10.50.0.245:18080`, where the `stage-dittofeed-cutover-proxy` container relays them to the Dittofeed ingress on `10.50.0.117:18080`.
 
-Zero-dependency cutover requires a dedicated public Dittofeed hostname that routes directly to `10.50.0.245:18080`. After that hostname exists, update the Flutter `dittofeed_base_url` build define and the Celetel delivery-callback URL, verify both routes, and remove the two temporary locations from the Stage Engage Nginx configuration.
+Zero-dependency cutover requires a dedicated public Dittofeed hostname that routes directly to `10.50.0.117:18080`. After that hostname exists, update the Flutter `dittofeed_base_url` build define and the Celetel delivery-callback URL, verify both routes, and remove `stage-dittofeed-cutover-proxy` from `10.50.0.245`.
 
 ## Service boundaries
 
@@ -31,21 +31,21 @@ The selective stream intentionally does not copy every analytics event. The sour
 
 ## Deploy
 
-Copy this repository to `/home/ubuntu/dittofeed-stage` on `10.50.0.245`, then run:
+Copy this repository to `/home/ubuntu/dittofeed-stage` on `10.50.0.117`, then run:
 
 ```bash
 cd /home/ubuntu/dittofeed-stage
 ./scripts/stage-deploy.sh
 ```
 
-The script generates `.env.stage` once with mode `0600`. On a fresh database it enables bootstrap for the first healthy start, then recreates Lite with bootstrap disabled. Later runs stay in steady-state mode. The prebuilt `stage-dittofeed-lite:v0.24.0-alpha.17-stage` image must be loaded before running the script.
+The script generates `.env.stage` once with mode `0600`. On a fresh database it enables bootstrap for the first healthy start, then recreates Lite with bootstrap disabled. Later runs stay in steady-state mode. The prebuilt `stage-dittofeed-lite:v0.24.0-alpha.17-stage-ui9` image must be loaded before running the script.
 
-Open `http://10.50.0.245:3100`. The single-tenant login password is stored in `/home/ubuntu/dittofeed-stage/.env.stage`.
+Open `http://10.50.0.117:3100`. The single-tenant login password is stored in `/home/ubuntu/dittofeed-stage/.env.stage`.
 
 ## Verification
 
 ```bash
-curl --fail http://10.50.0.245:3100/api
+curl --fail http://10.50.0.117:3100/api
 docker compose --env-file .env.stage -f docker-compose.stage-test.yaml ps
 docker inspect stage-dittofeed-lite --format '{{json .NetworkSettings.Networks}}'
 docker inspect stage-dittofeed-temporal --format '{{json .NetworkSettings.Networks}}'

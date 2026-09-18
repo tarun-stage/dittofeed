@@ -2,6 +2,7 @@ import { randomUUID } from "crypto";
 import { unwrap } from "isomorphic-lib/src/resultHandling/resultUtils";
 
 import { clickhouseClient } from "./clickhouse";
+import config, * as configModule from "./config";
 import { insert } from "./db";
 import {
   segment as dbSegment,
@@ -10,6 +11,7 @@ import {
 } from "./db/schema";
 import {
   buildSegmentsFile,
+  buildStageWarehouseAudienceQuery,
   calculateKeyedSegment,
   findAllSegmentAssignments,
   findAllSegmentAssignmentsByIdsForUsers,
@@ -32,6 +34,51 @@ import {
   Workspace,
 } from "./types";
 import { insertUserPropertyAssignments } from "./userProperties";
+
+describe("buildStageWarehouseAudienceQuery", () => {
+  it("pushes the audience shard into every intersected warehouse query", async () => {
+    const configSpy = jest.spyOn(configModule, "default");
+    configSpy.mockReturnValue({
+      ...config(),
+      enableStageWarehouseAudiences: true,
+    });
+    const definition = {
+      nodes: [
+        {
+          id: "device",
+          path: "deviceId",
+          type: SegmentNodeType.Trait,
+          operator: { type: SegmentOperatorType.Equals, value: "device-1" },
+        },
+        {
+          id: "profile",
+          path: "phone",
+          type: SegmentNodeType.Trait,
+          operator: { type: SegmentOperatorType.Equals, value: "9999999999" },
+        },
+      ],
+      entryNode: {
+        id: "entry",
+        type: SegmentNodeType.And,
+        children: ["device", "profile"],
+      },
+    } satisfies SegmentDefinition;
+
+    const result = await buildStageWarehouseAudienceQuery({
+      definition,
+      now: Date.now(),
+      shardCount: 16,
+    });
+
+    expect(result.query).toContain(
+      "cityHash64(_id) % 16 = {warehouseBucket:UInt8}",
+    );
+    expect(result.query).toContain(
+      "cityHash64(user_id) % 16 = {warehouseBucket:UInt8}",
+    );
+    configSpy.mockRestore();
+  });
+});
 
 describe("segments", () => {
   let workspace: Workspace;

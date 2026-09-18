@@ -592,13 +592,6 @@ export async function upsertBroadcastV2({
         const channel: ChannelType =
           Array.from(channels)[0] ?? ChannelType.Email;
 
-        if (channel === ChannelType.MobilePush) {
-          return err({
-            type: UpsertBroadcastV2ErrorTypeEnum.ConstraintViolation,
-            message: "Mobile push is not supported yet",
-          });
-        }
-
         let messageConfig: BroadcastV2Config["message"];
         switch (channel) {
           case ChannelType.Email:
@@ -612,6 +605,11 @@ export async function upsertBroadcastV2({
             };
             break;
           case ChannelType.Webhook:
+            messageConfig = {
+              type: channel,
+            };
+            break;
+          case ChannelType.MobilePush:
             messageConfig = {
               type: channel,
             };

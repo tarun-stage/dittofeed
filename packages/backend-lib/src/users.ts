@@ -12,6 +12,7 @@ import {
   ClickHouseQueryBuilder,
   command as chCommand,
   query as chQuery,
+  stageWarehouseClickhouseClient,
 } from "./clickhouse";
 import { db } from "./db";
 import {
@@ -41,6 +42,7 @@ import {
   GetUsersRequest,
   GetUsersResponse,
   GetUsersResponseItem,
+  JSONValue,
   Segment,
   SortOrderEnum,
   SubscriptionGroupType,
@@ -67,6 +69,226 @@ const Cursor = Type.Object({
 });
 
 type Cursor = Static<typeof Cursor>;
+
+export const STAGE_WAREHOUSE_USER_PROPERTY_NAMES = [
+  "id",
+  "email",
+  "language",
+  "phone",
+  "subscriptionStatus",
+  "subscriptionSource",
+  "subscriptionStartedAt",
+  "notificationsActive",
+  "whatsappOptIn",
+  "currentCity",
+  "currentState",
+  "currentCountry",
+  "hasUninstalled",
+  "userType",
+  "deviceToken",
+  "deviceId",
+  "platform",
+] as const;
+
+export interface StageWarehouseUserProperties {
+  properties: Record<string, JSONValue>;
+  mobilePushEligible: boolean;
+}
+
+interface StageWarehouseMobilePushEligibilityInput {
+  notificationStatus: unknown;
+  uninstalledStatus: unknown;
+  fallbackNotificationsActive: unknown;
+  fallbackHasUninstalled: unknown;
+  deviceToken: unknown;
+}
+
+interface StageWarehouseMobilePushEligibility {
+  notificationsActive: boolean | undefined;
+  hasUninstalled: boolean | undefined;
+  mobilePushEligible: boolean;
+}
+
+function booleanLikeValue(value: unknown): boolean | undefined {
+  if (typeof value === "boolean") return value;
+  if (value === 1) return true;
+  if (value === 0) return false;
+  if (typeof value !== "string") return undefined;
+  switch (value.trim().toLowerCase()) {
+    case "1":
+    case "true":
+    case "yes":
+    case "enabled":
+      return true;
+    case "0":
+    case "false":
+    case "no":
+    case "disabled":
+      return false;
+    default:
+      return undefined;
+  }
+}
+
+function notificationStatusValue(value: unknown): boolean | undefined {
+  if (typeof value === "string") {
+    const normalized = value.trim().toLowerCase();
+    if (normalized === "active") return true;
+    if (normalized === "inactive") return false;
+  }
+  return booleanLikeValue(value);
+}
+
+function uninstalledStatusValue(value: unknown): boolean | undefined {
+  if (typeof value === "string") {
+    const normalized = value.trim().toLowerCase();
+    if (normalized === "uninstalled") return true;
+    if (normalized === "installed") return false;
+  }
+  return booleanLikeValue(value);
+}
+
+export function resolveStageWarehouseMobilePushEligibility({
+  notificationStatus,
+  uninstalledStatus,
+  fallbackNotificationsActive,
+  fallbackHasUninstalled,
+  deviceToken,
+}: StageWarehouseMobilePushEligibilityInput): StageWarehouseMobilePushEligibility {
+  const notificationsActive =
+    notificationStatusValue(notificationStatus) ??
+    notificationStatusValue(fallbackNotificationsActive);
+  const hasUninstalled =
+    uninstalledStatusValue(uninstalledStatus) ??
+    uninstalledStatusValue(fallbackHasUninstalled);
+  const hasDeviceToken =
+    typeof deviceToken === "string" && deviceToken.trim().length > 0;
+
+  return {
+    notificationsActive,
+    hasUninstalled,
+    mobilePushEligible:
+      notificationsActive === true &&
+      hasUninstalled === false &&
+      hasDeviceToken,
+  };
+}
+
+function isJsonPrimitive(value: unknown): value is string | number | boolean {
+  return ["string", "number", "boolean"].includes(typeof value);
+}
+
+function stageWarehousePropertyValues(values: Record<string, unknown>) {
+  return Object.entries(values).reduce<Record<string, JSONValue>>(
+    (properties, [name, value]) => {
+      if (value === "" || !isJsonPrimitive(value)) return properties;
+      return { ...properties, [name]: value };
+    },
+    {},
+  );
+}
+
+export async function getStageWarehouseUserProperties({
+  userIds,
+}: {
+  userIds: string[];
+}): Promise<Map<string, StageWarehouseUserProperties>> {
+  if (userIds.length === 0) return new Map();
+  const sourceClient = stageWarehouseClickhouseClient();
+  const [profileResult, deviceResult] = await Promise.all([
+    sourceClient.query({
+      query: `
+        SELECT
+          user_id,
+          argMax(email, updated_at) AS email,
+          argMax(language, updated_at) AS language,
+          argMax(primary_mobile_number, updated_at) AS phone,
+          argMax(subscription_status, updated_at) AS subscriptionStatus,
+          argMax(subscription_source, updated_at) AS subscriptionSource,
+          argMax(toString(subscription_started_at), updated_at) AS subscriptionStartedAt,
+          argMax(are_notifications_active, updated_at) AS notificationsActive,
+          argMax(has_opted_in_on_whatsapp, updated_at) AS whatsappOptIn,
+          argMax(current_city, updated_at) AS currentCity,
+          argMax(current_state, updated_at) AS currentState,
+          argMax(current_country, updated_at) AS currentCountry,
+          argMax(has_uninstalled, updated_at) AS hasUninstalled,
+          argMax(user_type, updated_at) AS userType
+        FROM analytics_prod_core.dim_users
+        WHERE user_id IN {userIds:Array(String)}
+        GROUP BY user_id
+      `,
+      query_params: { userIds },
+      format: "JSONEachRow",
+    }),
+    sourceClient.query({
+      query: `
+        SELECT
+          _id AS user_id,
+          argMax(firebaseToken, _ab_cdc_cursor) AS deviceToken,
+          argMax(deviceId, _ab_cdc_cursor) AS deviceId,
+          argMax(platform, _ab_cdc_cursor) AS platform,
+          argMax(primaryMobileNumber, _ab_cdc_cursor) AS fallbackPhone,
+          argMax(tuple(notificationStatus), _ab_cdc_cursor).1 AS notificationStatus,
+          argMax(tuple(uninstalledStatus), _ab_cdc_cursor).1 AS uninstalledStatus
+        FROM raw_prod.users
+        WHERE _id IN {userIds:Array(String)}
+        GROUP BY _id
+      `,
+      query_params: { userIds },
+      format: "JSONEachRow",
+    }),
+  ]);
+  const profileRows = await profileResult.json<
+    Record<string, unknown> & { user_id: string }
+  >();
+  const deviceRows = await deviceResult.json<
+    Record<string, unknown> & { user_id: string }
+  >();
+  const profiles = new Map<string, Record<string, unknown>>(
+    profileRows.map((row) => [row.user_id, row]),
+  );
+  const devices = new Map<string, Record<string, unknown>>(
+    deviceRows.map((row) => [row.user_id, row]),
+  );
+  return new Map(
+    userIds.map((userId) => {
+      const profile = profiles.get(userId) ?? {};
+      const device = devices.get(userId) ?? {};
+      const pushEligibility = resolveStageWarehouseMobilePushEligibility({
+        notificationStatus: device.notificationStatus,
+        uninstalledStatus: device.uninstalledStatus,
+        fallbackNotificationsActive: profile.notificationsActive,
+        fallbackHasUninstalled: profile.hasUninstalled,
+        deviceToken: device.deviceToken,
+      });
+      return [
+        userId,
+        {
+          properties: stageWarehousePropertyValues({
+            id: userId,
+            email: profile.email,
+            language: profile.language,
+            phone: profile.phone ?? device.fallbackPhone,
+            subscriptionStatus: profile.subscriptionStatus,
+            subscriptionSource: profile.subscriptionSource,
+            subscriptionStartedAt: profile.subscriptionStartedAt,
+            notificationsActive: pushEligibility.notificationsActive,
+            whatsappOptIn: profile.whatsappOptIn,
+            currentCity: profile.currentCity,
+            currentState: profile.currentState,
+            currentCountry: profile.currentCountry,
+            hasUninstalled: pushEligibility.hasUninstalled,
+            userType: profile.userType,
+            deviceToken: device.deviceToken,
+            deviceId: device.deviceId,
+            platform: device.platform,
+          }),
+          mobilePushEligible: pushEligibility.mobilePushEligible,
+        },
+      ];
+    }),
+  );
+}
 
 function serializeUserCursor(cursor: Cursor): string {
   return serializeCursor(cursor);

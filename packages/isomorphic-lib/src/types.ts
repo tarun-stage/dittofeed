@@ -97,6 +97,14 @@ export enum InternalEventType {
   EmailMarkedSpam = "DFEmailMarkedSpam",
   SmsDelivered = "DFSmsDelivered",
   SmsFailed = "DFSmsFailed",
+  MobilePushDelivered = "DFMobilePushDelivered",
+  MobilePushClicked = "DFMobilePushClicked",
+  WebhookProcessed = "DFWebhookProcessed",
+  WebhookSent = "DFWebhookSent",
+  WebhookDelivered = "DFWebhookDelivered",
+  WebhookRead = "DFWebhookRead",
+  WebhookClicked = "DFWebhookClicked",
+  WebhookFailed = "DFWebhookFailed",
   JourneyNodeProcessed = "DFJourneyNodeProcessed",
   ManualSegmentUpdate = "DFManualSegmentUpdate",
   AttachedFiles = "DFAttachedFiles",
@@ -115,6 +123,14 @@ export const StatusEventsList = [
   InternalEventType.EmailMarkedSpam,
   InternalEventType.SmsDelivered,
   InternalEventType.SmsFailed,
+  InternalEventType.MobilePushDelivered,
+  InternalEventType.MobilePushClicked,
+  InternalEventType.WebhookProcessed,
+  InternalEventType.WebhookSent,
+  InternalEventType.WebhookDelivered,
+  InternalEventType.WebhookRead,
+  InternalEventType.WebhookClicked,
+  InternalEventType.WebhookFailed,
 ] as const;
 
 export enum CursorDirectionEnum {
@@ -396,6 +412,7 @@ export enum TimeOperator {
   Within = "Within",
   AfterAbsolute = "AfterAbsolute",
   BeforeAbsolute = "BeforeAbsolute",
+  BetweenAbsolute = "BetweenAbsolute",
 }
 
 export const PerformedSegmentNode = Type.Object({
@@ -407,6 +424,7 @@ export const PerformedSegmentNode = Type.Object({
   timeOperator: Type.Optional(Type.Enum(TimeOperator)),
   withinSeconds: Type.Optional(Type.Number()),
   absoluteTimestamp: Type.Optional(Type.String()),
+  absoluteTimestampEnd: Type.Optional(Type.String()),
   properties: Type.Optional(
     Type.Array(
       Type.Object({
@@ -1741,6 +1759,7 @@ export const MobilePushTemplateResource = Type.Object(
     title: Type.Optional(Type.String()),
     body: Type.Optional(Type.String()),
     imageUrl: Type.Optional(Type.String()),
+    deeplink: Type.Optional(Type.String()),
     android: Type.Optional(
       Type.Object({
         notification: Type.Object({
@@ -4041,6 +4060,41 @@ export const MessageSmsSuccess = Type.Composite([
 
 export type MessageSmsSuccess = Static<typeof MessageSmsSuccess>;
 
+export const MobilePushFirebaseSuccess = Type.Object({
+  type: Type.Literal(MobilePushProviderType.Firebase),
+  messageId: Type.String(),
+});
+
+export type MobilePushFirebaseSuccess = Static<
+  typeof MobilePushFirebaseSuccess
+>;
+
+export const MobilePushTestSuccess = Type.Object({
+  type: Type.Literal(MobilePushProviderType.Test),
+});
+
+export type MobilePushTestSuccess = Static<typeof MobilePushTestSuccess>;
+
+export const MobilePushProviderSuccess = Type.Union([
+  MobilePushFirebaseSuccess,
+  MobilePushTestSuccess,
+]);
+
+export type MobilePushProviderSuccess = Static<
+  typeof MobilePushProviderSuccess
+>;
+
+export const MessageMobilePushSuccess = Type.Object({
+  type: Type.Literal(ChannelType.MobilePush),
+  provider: MobilePushProviderSuccess,
+  to: Type.String(),
+  title: Type.Optional(Type.String()),
+  body: Type.Optional(Type.String()),
+  imageUrl: Type.Optional(Type.String()),
+});
+
+export type MessageMobilePushSuccess = Static<typeof MessageMobilePushSuccess>;
+
 export const EmailTestSuccess = Type.Object({
   type: Type.Literal(EmailProviderType.Test),
 });
@@ -4166,6 +4220,7 @@ export type MessageSkipped = Static<typeof MessageSkipped>;
 export const MessageSendSuccessVariant = Type.Union([
   MessageEmailSuccess,
   MessageSmsSuccess,
+  MessageMobilePushSuccess,
   MessageWebhookSuccess,
 ]);
 
@@ -4464,6 +4519,18 @@ export const MessageSmsServiceFailure = Type.Object({
 
 export type MessageSmsServiceFailure = Static<typeof MessageSmsServiceFailure>;
 
+export const MessageMobilePushServiceFailure = Type.Object({
+  type: Type.Literal(ChannelType.MobilePush),
+  provider: Type.Object({
+    type: Type.Enum(MobilePushProviderType),
+    message: Type.String(),
+  }),
+});
+
+export type MessageMobilePushServiceFailure = Static<
+  typeof MessageMobilePushServiceFailure
+>;
+
 export const MessageWebhookServiceFailure = Type.Object({
   type: Type.Literal(ChannelType.Webhook),
   code: Type.Optional(Type.String()),
@@ -4477,6 +4544,7 @@ export type MessageWebhookServiceFailure = Static<
 export const MessageServiceFailureVariant = Type.Union([
   MessageEmailServiceFailure,
   MessageSmsServiceFailure,
+  MessageMobilePushServiceFailure,
   MessageWebhookServiceFailure,
 ]);
 
@@ -5991,8 +6059,17 @@ export const BroadcastSmsMessageVariant = Type.Union([
 export type BroadcastSmsMessageVariant = Static<
   typeof BroadcastSmsMessageVariant
 >;
+export const BroadcastAudienceSource = Type.Union([
+  Type.Literal("Dittofeed"),
+  Type.Literal("StageWarehouse"),
+]);
+
+export type BroadcastAudienceSource = Static<typeof BroadcastAudienceSource>;
+
 export const BroadcastV2Config = Type.Object({
   type: Type.Literal(BroadcastConfigTypeEnum.V2),
+  audienceSource: Type.Optional(BroadcastAudienceSource),
+  warehouseAudienceRunId: Type.Optional(Type.String()),
   // messages per second
   rateLimit: Type.Optional(Type.Number()),
   defaultTimezone: Type.Optional(Type.String()),
@@ -6003,6 +6080,7 @@ export const BroadcastV2Config = Type.Object({
     // Defined separately to allow workspace member specific providers.
     BroadcastEmailMessageVariant,
     BroadcastSmsMessageVariant,
+    Type.Omit(MobilePushMessageVariant, ["templateId"]),
     Type.Omit(WebhookMessageVariant, ["templateId"]),
   ]),
 });

@@ -1,11 +1,17 @@
+import { Row } from "@clickhouse/client";
 import { zonedTimeToUtc } from "date-fns-tz";
 import { and, eq } from "drizzle-orm";
 import { unwrap } from "isomorphic-lib/src/resultHandling/resultUtils";
 import { schemaValidateWithErr } from "isomorphic-lib/src/resultHandling/schemaValidation";
 import { omit } from "remeda";
-import { v5 as uuidV5 } from "uuid";
+import { v4 as uuidV4, v5 as uuidV5 } from "uuid";
 
 import { submitBatch } from "../apps/batch";
+import {
+  clickhouseClient,
+  command as clickhouseCommand,
+  stageWarehouseClickhouseClient,
+} from "../clickhouse";
 import { ComputePropertiesArgs } from "../computedProperties/computePropertiesIncremental";
 import { computePropertiesIncremental } from "../computedProperties/computePropertiesWorkflow/activities/computeProperties";
 import { db } from "../db";
@@ -21,7 +27,10 @@ import {
   SubscriptionGroupDetailsWithName,
 } from "../messaging";
 import { withSpan } from "../openTelemetry";
-import { toSegmentResource } from "../segments";
+import {
+  buildStageWarehouseAudienceQuery,
+  toSegmentResource,
+} from "../segments";
 import {
   getSubscriptionGroupDetails,
   getSubscriptionGroupsWithAssignments,
@@ -42,7 +51,7 @@ import {
   SavedSegmentResource,
   TrackData,
 } from "../types";
-import { getUsers } from "../users";
+import { getStageWarehouseUserProperties, getUsers } from "../users";
 
 export { markBroadcastStatus } from "../broadcasts";
 
@@ -189,6 +198,222 @@ async function getUnmessagedUsers(
   };
 }
 
+let stageWarehouseAudienceTablePromise: Promise<unknown> | null = null;
+
+function ensureStageWarehouseAudienceTable() {
+  if (!stageWarehouseAudienceTablePromise) {
+    stageWarehouseAudienceTablePromise = clickhouseCommand({
+      query: `
+        CREATE TABLE IF NOT EXISTS stage_warehouse_audience
+        (
+          workspace_id String,
+          broadcast_id String,
+          run_id String,
+          user_id String,
+          created_at DateTime
+        )
+        ENGINE = MergeTree
+        PARTITION BY toDate(created_at)
+        ORDER BY (workspace_id, broadcast_id, run_id, user_id)
+        TTL created_at + INTERVAL 7 DAY DELETE
+      `,
+    }).catch((error) => {
+      stageWarehouseAudienceTablePromise = null;
+      throw error;
+    });
+  }
+  return stageWarehouseAudienceTablePromise;
+}
+
+async function filterUnmessagedUsers({
+  users,
+  workspaceId,
+  broadcastId,
+  now,
+  limit,
+}: {
+  users: GetUsersResponseItem[];
+  workspaceId: string;
+  broadcastId: string;
+  now: number;
+  limit: number;
+}) {
+  if (users.length === 0) return users;
+  const alreadySent = await searchDeliveries({
+    workspaceId,
+    broadcastId,
+    userId: users.map((user) => user.id),
+    limit,
+    endDate: new Date(now).toISOString(),
+    startDate: new Date(now - 1000 * 60 * 60 * 24).toISOString(),
+  });
+  const sentUserIds = new Set(alreadySent.items.map((item) => item.userId));
+  return users.filter((user) => !sentUserIds.has(user.id));
+}
+
+function stageWarehouseProperties(values: Record<string, JSONValue>) {
+  return Object.entries(values).reduce<GetUsersResponseItem["properties"]>(
+    (properties, [name, value]) => ({
+      ...properties,
+      [name]: { name, value },
+    }),
+    {},
+  );
+}
+
+function isClickhouseRow(value: unknown): value is Row {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    "json" in value &&
+    typeof value.json === "function"
+  );
+}
+
+function isClickhouseRowBatch(value: unknown): value is Row[] {
+  return Array.isArray(value) && value.every(isClickhouseRow);
+}
+
+async function getStageWarehouseUsers({
+  workspaceId,
+  broadcastId,
+  runId,
+  cursor,
+  limit,
+  now,
+  channel,
+}: {
+  workspaceId: string;
+  broadcastId: string;
+  runId: string;
+  cursor?: string;
+  limit: number;
+  now: number;
+  channel: ChannelType;
+}): Promise<{ users: GetUsersResponseItem[]; nextCursor?: string }> {
+  await ensureStageWarehouseAudienceTable();
+  const snapshotResult = await clickhouseClient().query({
+    query: `
+      SELECT user_id
+      FROM stage_warehouse_audience
+      WHERE workspace_id = {workspaceId:String}
+        AND broadcast_id = {broadcastId:String}
+        AND run_id = {runId:String}
+        AND user_id > {cursor:String}
+      ORDER BY user_id
+      LIMIT {limit:UInt32}
+    `,
+    query_params: {
+      workspaceId,
+      broadcastId,
+      runId,
+      cursor: cursor ?? "",
+      limit,
+    },
+    format: "JSONEachRow",
+  });
+  const snapshotRows = await snapshotResult.json<{ user_id: string }>();
+  if (snapshotRows.length === 0) return { users: [] };
+  const userIds = snapshotRows.map((row) => row.user_id);
+  const warehouseProperties = await getStageWarehouseUserProperties({
+    userIds,
+  });
+  const eligibleUserIds = userIds.filter((userId) => {
+    if (channel !== ChannelType.MobilePush) return true;
+    return warehouseProperties.get(userId)?.mobilePushEligible === true;
+  });
+  const users = eligibleUserIds.map((userId) => {
+    const properties = stageWarehouseProperties(
+      warehouseProperties.get(userId)?.properties ?? { id: userId },
+    );
+    return { id: userId, properties, segments: [] };
+  });
+  const filteredUsers = await filterUnmessagedUsers({
+    users,
+    workspaceId,
+    broadcastId,
+    now,
+    limit,
+  });
+  return {
+    users: filteredUsers,
+    nextCursor:
+      snapshotRows.length === limit ? snapshotRows.at(-1)?.user_id : undefined,
+  };
+}
+
+async function materializeStageWarehouseAudience({
+  workspaceId,
+  broadcastId,
+  definition,
+  now,
+}: {
+  workspaceId: string;
+  broadcastId: string;
+  definition: SavedSegmentResource["definition"];
+  now: number;
+}) {
+  await ensureStageWarehouseAudienceTable();
+  const runId = uuidV4();
+  const bucketCount = 16;
+  const compiled = await buildStageWarehouseAudienceQuery({
+    definition,
+    now,
+    shardCount: bucketCount,
+  });
+  const createdAt = new Date(now).toISOString().slice(0, 19).replace("T", " ");
+  let users = 0;
+  for (let bucket = 0; bucket < bucketCount; bucket += 1) {
+    // Buckets run sequentially to stay below the source warehouse memory limit.
+    // eslint-disable-next-line no-await-in-loop
+    const result = await stageWarehouseClickhouseClient().query({
+      query: `
+        SELECT user_id
+        FROM (${compiled.query})
+      `,
+      query_params: { ...compiled.queryParams, warehouseBucket: bucket },
+      format: "JSONEachRow",
+      clickhouse_settings: {
+        group_by_two_level_threshold: "100000",
+        group_by_two_level_threshold_bytes: String(64 * 1024 * 1024),
+        max_block_size: "8192",
+        max_bytes_before_external_group_by: String(64 * 1024 * 1024),
+        max_memory_usage: String(512 * 1024 * 1024),
+        max_threads: 1,
+      },
+    });
+    const stream: AsyncIterable<unknown> = result.stream();
+    const bucketRows: { user_id: string }[] = [];
+    // eslint-disable-next-line no-await-in-loop
+    for await (const batch of stream) {
+      if (!isClickhouseRowBatch(batch)) {
+        throw new Error("Stage warehouse returned an invalid audience batch");
+      }
+      const rows = await Promise.all(
+        batch.map((row) => row.json<{ user_id: string }>()),
+      );
+      bucketRows.push(...rows);
+    }
+    if (bucketRows.length > 0) {
+      // eslint-disable-next-line no-await-in-loop
+      await clickhouseClient().insert({
+        table: "stage_warehouse_audience",
+        values: bucketRows.map((row) => ({
+          workspace_id: workspaceId,
+          broadcast_id: broadcastId,
+          run_id: runId,
+          user_id: row.user_id,
+          created_at: createdAt,
+        })),
+        format: "JSONEachRow",
+        clickhouse_settings: { wait_end_of_query: 1 },
+      });
+      users += bucketRows.length;
+    }
+  }
+  return { runId, users };
+}
+
 export function sendMessagesFactory(sender: Sender) {
   return async function sendMessagesWithSender(
     params: SendMessagesParams,
@@ -241,18 +466,35 @@ export function sendMessagesFactory(sender: Sender) {
         throw new Error("Broadcast subscription group is null");
       }
 
-      const { users, nextCursor } = await getUnmessagedUsers({
-        workspaceId: params.workspaceId,
-        segmentFilter: broadcast.segmentId ? [broadcast.segmentId] : undefined,
-        // This will account for subscription group logic
-        subscriptionGroupFilter: broadcast.subscriptionGroupId
-          ? [broadcast.subscriptionGroupId]
-          : undefined,
-        cursor: params.cursor,
-        limit: params.limit,
-        broadcastId: params.broadcastId,
-        now: params.now,
-      });
+      const { users, nextCursor } =
+        config.audienceSource === "StageWarehouse"
+          ? await getStageWarehouseUsers({
+              workspaceId: params.workspaceId,
+              broadcastId: params.broadcastId,
+              runId:
+                config.warehouseAudienceRunId ??
+                (() => {
+                  throw new Error("Warehouse audience snapshot is missing");
+                })(),
+              cursor: params.cursor,
+              limit: params.limit,
+              now: params.now,
+              channel: config.message.type,
+            })
+          : await getUnmessagedUsers({
+              workspaceId: params.workspaceId,
+              segmentFilter: broadcast.segmentId
+                ? [broadcast.segmentId]
+                : undefined,
+              // This will account for subscription group logic
+              subscriptionGroupFilter: broadcast.subscriptionGroupId
+                ? [broadcast.subscriptionGroupId]
+                : undefined,
+              cursor: params.cursor,
+              limit: params.limit,
+              broadcastId: params.broadcastId,
+              now: params.now,
+            });
 
       const subscriptionGroup = await getSubscriptionGroupsWithAssignments({
         subscriptionGroupIds: [broadcast.subscriptionGroupId],
@@ -353,6 +595,13 @@ export function sendMessagesFactory(sender: Sender) {
                 ...baseParams,
                 ...config.message,
                 channel: ChannelType.Webhook,
+              };
+              break;
+            case ChannelType.MobilePush:
+              messageVariant = {
+                ...baseParams,
+                ...config.message,
+                channel: ChannelType.MobilePush,
               };
               break;
           }
@@ -561,6 +810,47 @@ export async function recomputeBroadcastSegment({
     );
     return false;
   }
+  const configResult = schemaValidateWithErr(
+    broadcast.config,
+    BroadcastV2Config,
+  );
+  if (configResult.isErr()) {
+    logger().error(
+      { broadcastId, workspaceId, err: configResult.error },
+      "Broadcast config is invalid",
+    );
+    return false;
+  }
+  const segmentResource: SavedSegmentResource = unwrap(
+    toSegmentResource(broadcast.segment),
+  );
+  if (configResult.value.audienceSource === "StageWarehouse") {
+    const { runId, users } = await materializeStageWarehouseAudience({
+      workspaceId,
+      broadcastId,
+      definition: segmentResource.definition,
+      now,
+    });
+    await db()
+      .update(schema.broadcast)
+      .set({
+        config: {
+          ...configResult.value,
+          warehouseAudienceRunId: runId,
+        },
+      })
+      .where(
+        and(
+          eq(schema.broadcast.id, broadcastId),
+          eq(schema.broadcast.workspaceId, workspaceId),
+        ),
+      );
+    logger().info(
+      { broadcastId, workspaceId, runId, users },
+      "Stage warehouse audience materialized",
+    );
+    return true;
+  }
   if (broadcast.segment.resourceType !== "Internal") {
     logger().info(
       {
@@ -571,9 +861,6 @@ export async function recomputeBroadcastSegment({
     );
     return false;
   }
-  const segmentResource: SavedSegmentResource = unwrap(
-    toSegmentResource(broadcast.segment),
-  );
   const args: ComputePropertiesArgs = {
     workspaceId,
     segments: [segmentResource],

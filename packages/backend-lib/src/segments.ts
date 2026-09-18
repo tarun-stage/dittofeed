@@ -21,8 +21,9 @@ import {
   ClickHouseQueryBuilder,
   command as chCommand,
   query as chQuery,
+  stageWarehouseClickhouseClient,
 } from "./clickhouse";
-import { assignmentSequentialConsistency } from "./config";
+import config, { assignmentSequentialConsistency } from "./config";
 import { db, TxQueryError, txQueryResult } from "./db";
 import {
   segment as dbSegment,
@@ -48,6 +49,7 @@ import {
   SegmentOperatorType,
   SegmentStatus,
   SegmentStatusEnum,
+  TimeOperator,
   UpdateSegmentStatusRequest,
   UpsertSegmentResource,
   UpsertSegmentValidationError,
@@ -1197,4 +1199,483 @@ export function getSegmentsHash({
   definition: SegmentDefinition;
 }): string {
   return uuidv5(stableJsonStringify(definition), SEGMENTS_HASH_NAMESPACE);
+}
+
+export const STAGE_WAREHOUSE_TRAITS = [
+  "email",
+  "language",
+  "phone",
+  "subscriptionStatus",
+  "subscriptionSource",
+  "subscriptionStartedAt",
+  "deviceToken",
+  "deviceId",
+  "platform",
+  "notificationsActive",
+  "whatsappOptIn",
+  "currentCity",
+  "currentState",
+  "currentCountry",
+  "hasUninstalled",
+  "userType",
+];
+
+export const STAGE_WAREHOUSE_EVENT_PROPERTIES: Record<string, string[]> = {
+  app_open: [
+    "platform",
+    "context_os_name",
+    "context_device_id",
+    "app_version",
+    "language",
+  ],
+  playback_started: [
+    "platform",
+    "context_os_name",
+    "context_device_id",
+    "content_id",
+    "content_type",
+    "language",
+  ],
+  consumption_90: ["platform", "content_id", "content_type", "language"],
+  subscription_events: ["platform", "source", "status", "plan_id"],
+  renewal_events: ["platform", "source", "status", "plan_id"],
+  login_events: ["platform", "context_os_name", "language"],
+  signup_events: ["platform", "context_os_name", "language"],
+};
+
+interface StageWarehouseTable {
+  database: string;
+  table: string;
+}
+
+const STAGE_WAREHOUSE_EVENT_TABLES: Record<string, StageWarehouseTable[]> = {
+  app_open: [{ database: "raw_prod_events", table: "app_open" }],
+  playback_started: [
+    { database: "raw_prod_events", table: "playback_started" },
+  ],
+  consumption_90: [
+    { database: "raw_prod_events", table: "consumption_ninety" },
+    { database: "raw_prod_events_web", table: "consumption_ninety_web" },
+    { database: "raw_prod_events_web", table: "consumption_ninety_tv" },
+  ],
+};
+
+const STAGE_WAREHOUSE_EVENT_TABLE_FILTERS: Record<string, string> = {
+  subscription_events: `(
+    (database = 'raw_prod_events' AND positionCaseInsensitive(name, 'subscription') > 0)
+    OR (database = 'raw_prod_events_web' AND positionCaseInsensitive(name, 'subscription') > 0)
+    OR (database = 'raw_prod_events_backend' AND name IN (
+      'into_the_subscription_flow', 'subscription_activated',
+      'subscription_mandate_paused', 'subscription_mandate_resumed',
+      'subscription_mandate_revoked', 'subscription_over',
+      'subscription_paused', 'subscription_resumed',
+      'subscription_taken_manually'
+    ))
+  ) AND positionCaseInsensitive(name, 'renew') = 0`,
+  renewal_events: `(
+    (database = 'raw_prod_events' AND positionCaseInsensitive(name, 'renew') > 0)
+    OR (database = 'raw_prod_events_web' AND positionCaseInsensitive(name, 'renew') > 0)
+    OR (database = 'raw_prod_events_backend' AND name = 'subscription_renewed')
+  )`,
+  login_events: `positionCaseInsensitive(name, 'login') > 0`,
+  signup_events: `positionCaseInsensitive(name, 'signup') > 0`,
+};
+
+const stageWarehouseTablesCache = new Map<string, StageWarehouseTable[]>();
+let stageWarehouseCatalogCache:
+  | {
+      expiresAt: number;
+      properties: Record<string, string[]>;
+      tables: Record<string, StageWarehouseTable[]>;
+    }
+  | undefined;
+
+export async function getStageWarehouseEventCatalog(): Promise<
+  Record<string, string[]>
+> {
+  if (
+    stageWarehouseCatalogCache &&
+    stageWarehouseCatalogCache.expiresAt > Date.now()
+  ) {
+    return stageWarehouseCatalogCache.properties;
+  }
+  const result = await stageWarehouseClickhouseClient().query({
+    query: `
+      SELECT database, table, groupArray(name) AS columns
+      FROM system.columns
+      WHERE database IN ('raw_prod_events', 'raw_prod_events_backend', 'raw_prod_events_web')
+      GROUP BY database, table
+      HAVING has(columns, 'user_id') AND has(columns, 'received_at')
+      ORDER BY database, table
+    `,
+    format: "JSONEachRow",
+  });
+  const rows = await result.json<StageWarehouseTable & { columns: string[] }>();
+  const properties: Record<string, string[]> = {};
+  const tables: Record<string, StageWarehouseTable[]> = {};
+  for (const row of rows) {
+    if (
+      !/^[A-Za-z_][A-Za-z0-9_]*$/.test(row.database) ||
+      !/^[A-Za-z_][A-Za-z0-9_]*$/.test(row.table)
+    )
+      continue;
+    const qualifiedEvent = `${row.database}.${row.table}`;
+    tables[qualifiedEvent] = [{ database: row.database, table: row.table }];
+    properties[qualifiedEvent] = row.columns
+      .filter((column) => column !== "received_at")
+      .sort();
+    tables[row.table] = [
+      ...(tables[row.table] ?? []),
+      {
+        database: row.database,
+        table: row.table,
+      },
+    ];
+  }
+  for (const [event, eventTables] of Object.entries(
+    STAGE_WAREHOUSE_EVENT_TABLES,
+  )) {
+    properties[event] = [
+      ...new Set([
+        ...(STAGE_WAREHOUSE_EVENT_PROPERTIES[event] ?? []),
+        ...eventTables.flatMap(
+          ({ database, table }) => properties[`${database}.${table}`] ?? [],
+        ),
+      ]),
+    ].sort();
+  }
+  for (const [event, eventProperties] of Object.entries(
+    STAGE_WAREHOUSE_EVENT_PROPERTIES,
+  )) {
+    properties[event] = properties[event] ?? eventProperties;
+  }
+  stageWarehouseCatalogCache = {
+    expiresAt: Date.now() + 5 * 60 * 1000,
+    properties,
+    tables,
+  };
+  return properties;
+}
+
+function stageWarehouseEnabled() {
+  return config().enableStageWarehouseAudiences;
+}
+
+async function stageWarehouseEventTables(event: string) {
+  const configured = STAGE_WAREHOUSE_EVENT_TABLES[event];
+  if (configured) return configured;
+  const cached = stageWarehouseTablesCache.get(event);
+  if (cached) return cached;
+  const filter = STAGE_WAREHOUSE_EVENT_TABLE_FILTERS[event];
+  if (!filter) {
+    await getStageWarehouseEventCatalog();
+    const tables = stageWarehouseCatalogCache?.tables[event];
+    if (!tables?.length) {
+      throw new Error(`Unsupported Stage warehouse event: ${event}`);
+    }
+    return tables;
+  }
+  const result = await stageWarehouseClickhouseClient().query({
+    query: `
+      SELECT database, name AS table
+      FROM system.tables
+      WHERE database IN (
+        'raw_prod_events', 'raw_prod_events_backend', 'raw_prod_events_web'
+      ) AND ${filter}
+      ORDER BY database, table
+    `,
+    format: "JSONEachRow",
+  });
+  const tables = await result.json<StageWarehouseTable>();
+  stageWarehouseTablesCache.set(event, tables);
+  return tables;
+}
+
+function normalizeStageWarehousePath(path: string) {
+  const bracketMatch = path.match(/^\$\["([^"\\]+)"\]$/);
+  return bracketMatch?.[1] ?? path;
+}
+
+function stageWarehouseComparison(
+  expression: string,
+  operator: SegmentOperatorType,
+  value: unknown,
+  qb: ClickHouseQueryBuilder,
+) {
+  switch (operator) {
+    case SegmentOperatorType.Equals:
+      return `toString(${expression}) = ${qb.addQueryValue(String(value), "String")}`;
+    case SegmentOperatorType.NotEquals:
+      return `toString(${expression}) != ${qb.addQueryValue(String(value), "String")}`;
+    case SegmentOperatorType.Exists:
+      return `${expression} IS NOT NULL AND toString(${expression}) != ''`;
+    case SegmentOperatorType.NotExists:
+      return `${expression} IS NULL OR toString(${expression}) = ''`;
+    case SegmentOperatorType.GreaterThanOrEqual:
+      return `toFloat64OrNull(toString(${expression})) >= ${qb.addQueryValue(Number(value), "Float64")}`;
+    case SegmentOperatorType.LessThan:
+      return `toFloat64OrNull(toString(${expression})) < ${qb.addQueryValue(Number(value), "Float64")}`;
+    default:
+      throw new Error(`Unsupported Stage warehouse operator: ${operator}`);
+  }
+}
+
+async function stageWarehouseTableColumns(tables: StageWarehouseTable[]) {
+  if (tables.length === 0) return new Map<string, Set<string>>();
+  const qb = new ClickHouseQueryBuilder();
+  const clauses = tables.map(
+    ({ database, table }) =>
+      `(database = ${qb.addQueryValue(database, "String")} AND table = ${qb.addQueryValue(table, "String")})`,
+  );
+  const result = await stageWarehouseClickhouseClient().query({
+    query: `SELECT database, table, name FROM system.columns WHERE ${clauses.join(" OR ")}`,
+    query_params: qb.getQueries(),
+    format: "JSONEachRow",
+  });
+  const rows = await result.json<{
+    database: string;
+    table: string;
+    name: string;
+  }>();
+  const byTable = new Map<string, Set<string>>();
+  for (const row of rows) {
+    const key = `${row.database}.${row.table}`;
+    const columns = byTable.get(key) ?? new Set<string>();
+    columns.add(row.name);
+    byTable.set(key, columns);
+  }
+  return byTable;
+}
+
+const STAGE_WAREHOUSE_TRAIT_EXPRESSIONS: Record<
+  string,
+  { source: "profile" | "device"; expression: string }
+> = {
+  email: { source: "profile", expression: "email" },
+  language: { source: "profile", expression: "language" },
+  phone: { source: "profile", expression: "primary_mobile_number" },
+  subscriptionStatus: {
+    source: "profile",
+    expression: "subscription_status",
+  },
+  subscriptionSource: {
+    source: "profile",
+    expression: "subscription_source",
+  },
+  subscriptionStartedAt: {
+    source: "profile",
+    expression: "subscription_started_at",
+  },
+  notificationsActive: {
+    source: "profile",
+    expression: "are_notifications_active",
+  },
+  whatsappOptIn: {
+    source: "profile",
+    expression: "has_opted_in_on_whatsapp",
+  },
+  currentCity: { source: "profile", expression: "current_city" },
+  currentState: { source: "profile", expression: "current_state" },
+  currentCountry: { source: "profile", expression: "current_country" },
+  hasUninstalled: { source: "profile", expression: "has_uninstalled" },
+  userType: { source: "profile", expression: "user_type" },
+  deviceToken: {
+    source: "device",
+    expression: "argMax(firebaseToken, _ab_cdc_cursor)",
+  },
+  deviceId: {
+    source: "device",
+    expression: "argMax(deviceId, _ab_cdc_cursor)",
+  },
+  platform: {
+    source: "device",
+    expression: "argMax(platform, _ab_cdc_cursor)",
+  },
+};
+
+async function compileStageWarehouseNode({
+  definition,
+  node,
+  now,
+  qb,
+  shardCount,
+}: {
+  definition: SegmentDefinition;
+  node: SegmentNode;
+  now: number;
+  qb: ClickHouseQueryBuilder;
+  shardCount?: number;
+}): Promise<string> {
+  if (node.type === SegmentNodeType.And || node.type === SegmentNodeType.Or) {
+    const children = node.children.map((id) => getSegmentNode(definition, id));
+    if (children.some((child) => child === null)) {
+      throw new Error("Stage warehouse segment contains a missing child node");
+    }
+    const validChildren = children.filter(
+      (child): child is SegmentNode => child !== null,
+    );
+    const compiled = await Promise.all(
+      validChildren.map((child) =>
+        compileStageWarehouseNode({
+          definition,
+          node: child,
+          now,
+          qb,
+          shardCount,
+        }),
+      ),
+    );
+    if (compiled.length === 0) {
+      throw new Error("Stage warehouse segment group cannot be empty");
+    }
+    const joiner =
+      node.type === SegmentNodeType.And ? " INTERSECT " : " UNION DISTINCT ";
+    return compiled.map((query) => `(${query})`).join(joiner);
+  }
+  const shardPredicate = (identifier: string) =>
+    shardCount
+      ? ` AND cityHash64(${identifier}) % ${shardCount} = {warehouseBucket:UInt8}`
+      : "";
+  if (node.type === SegmentNodeType.Everyone) {
+    return `SELECT user_id FROM analytics_prod_core.dim_users WHERE user_id != ''${shardPredicate("user_id")}`;
+  }
+  if (node.type === SegmentNodeType.Trait) {
+    const path = normalizeStageWarehousePath(node.path);
+    const trait = STAGE_WAREHOUSE_TRAIT_EXPRESSIONS[path];
+    if (!trait) throw new Error(`Unsupported Stage warehouse trait: ${path}`);
+    const value = "value" in node.operator ? node.operator.value : undefined;
+    const predicate = stageWarehouseComparison(
+      trait.expression,
+      node.operator.type,
+      value,
+      qb,
+    );
+    if (trait.source === "profile") {
+      return `SELECT user_id FROM analytics_prod_core.dim_users WHERE user_id != ''${shardPredicate("user_id")} AND (${predicate})`;
+    }
+    return `SELECT _id AS user_id FROM raw_prod.users WHERE _id != ''${shardPredicate("_id")} GROUP BY _id HAVING (${predicate})`;
+  }
+  if (node.type === SegmentNodeType.Performed) {
+    const tables = await stageWarehouseEventTables(node.event);
+    const columnsByTable = await stageWarehouseTableColumns(tables);
+    const retentionStart = now - 90 * 24 * 60 * 60 * 1000;
+    let startMs = node.withinSeconds
+      ? Math.max(retentionStart, now - node.withinSeconds * 1000)
+      : retentionStart;
+    let endMs = now;
+    if (
+      node.timeOperator === TimeOperator.AfterAbsolute ||
+      node.timeOperator === TimeOperator.BetweenAbsolute
+    ) {
+      startMs = new Date(node.absoluteTimestamp ?? "").getTime();
+    }
+    if (node.timeOperator === TimeOperator.BeforeAbsolute) {
+      endMs = new Date(node.absoluteTimestamp ?? "").getTime();
+    }
+    if (node.timeOperator === TimeOperator.BetweenAbsolute) {
+      endMs = new Date(node.absoluteTimestampEnd ?? "").getTime();
+    }
+    if (
+      !Number.isFinite(startMs) ||
+      !Number.isFinite(endMs) ||
+      startMs >= endMs
+    ) {
+      throw new Error("Invalid Stage warehouse event date range");
+    }
+    const start = new Date(startMs)
+      .toISOString()
+      .replace("T", " ")
+      .replace("Z", "");
+    const end = new Date(endMs)
+      .toISOString()
+      .replace("T", " ")
+      .replace("Z", "");
+    const startParam = qb.addQueryValue(start, "DateTime64(3)");
+    const endParam = qb.addQueryValue(end, "DateTime64(3)");
+    const unions = tables.flatMap(({ database, table }) => {
+      const columns = columnsByTable.get(`${database}.${table}`);
+      if (!columns?.has("user_id") || !columns.has("received_at")) return [];
+      const predicates = (node.properties ?? []).flatMap((property) => {
+        const path = normalizeStageWarehousePath(property.path);
+        if (!columns.has(path)) return [];
+        const value =
+          "value" in property.operator ? property.operator.value : undefined;
+        return [
+          stageWarehouseComparison(
+            `\`${path}\``,
+            property.operator.type,
+            value,
+            qb,
+          ),
+        ];
+      });
+      if (predicates.length !== (node.properties?.length ?? 0)) return [];
+      return [
+        `SELECT user_id FROM ${database}.\`${table}\` WHERE user_id != ''${shardPredicate("user_id")} AND received_at >= ${startParam} AND received_at < ${endParam}${predicates.length ? ` AND ${predicates.map((p) => `(${p})`).join(" AND ")}` : ""}`,
+      ];
+    });
+    if (unions.length === 0) {
+      throw new Error(`No compatible Stage warehouse tables for ${node.event}`);
+    }
+    const comparator =
+      node.timesOperator ?? RelationalOperators.GreaterThanOrEqual;
+    const threshold = node.times ?? 1;
+    const eventUsers = `SELECT user_id FROM (${unions.join(" UNION ALL ")}) GROUP BY user_id`;
+    if (
+      comparator === RelationalOperators.LessThan ||
+      (comparator === RelationalOperators.Equals && threshold === 0)
+    ) {
+      const excludedCount =
+        comparator === RelationalOperators.LessThan ? threshold : 1;
+      const excludedParam = qb.addQueryValue(excludedCount, "UInt64");
+      return `SELECT user_id FROM analytics_prod_core.dim_users WHERE user_id != ''${shardPredicate("user_id")} AND user_id NOT IN (${eventUsers} HAVING count() >= ${excludedParam})`;
+    }
+    const times = qb.addQueryValue(threshold, "UInt64");
+    return `${eventUsers} HAVING count() ${comparator} ${times}`;
+  }
+  throw new Error(`Unsupported Stage warehouse segment node: ${node.type}`);
+}
+
+export async function buildStageWarehouseAudienceQuery({
+  definition,
+  now,
+  shardCount,
+}: {
+  definition: SegmentDefinition;
+  now: number;
+  shardCount?: number;
+}) {
+  if (!stageWarehouseEnabled()) {
+    throw new Error("Stage warehouse audiences are disabled");
+  }
+  const qb = new ClickHouseQueryBuilder();
+  const query = await compileStageWarehouseNode({
+    definition,
+    node: definition.entryNode,
+    now,
+    qb,
+    shardCount,
+  });
+  return { query, queryParams: qb.getQueries() };
+}
+
+export async function countStageWarehouseAudience({
+  definition,
+  now,
+}: {
+  definition: SegmentDefinition;
+  now: number;
+}) {
+  const startedAt = Date.now();
+  const compiled = await buildStageWarehouseAudienceQuery({ definition, now });
+  const result = await stageWarehouseClickhouseClient().query({
+    query: `SELECT count() AS users FROM (${compiled.query})`,
+    query_params: compiled.queryParams,
+    format: "JSONEachRow",
+  });
+  const rows = await result.json<{ users: string | number }>();
+  return {
+    users: Number(rows[0]?.users ?? 0),
+    durationMs: Date.now() - startedAt,
+  };
 }

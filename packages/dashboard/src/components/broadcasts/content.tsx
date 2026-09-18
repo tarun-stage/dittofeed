@@ -24,6 +24,7 @@ import EmailEditor from "../messages/emailEditor";
 import SmsEditor from "../messages/smsEditor";
 import WebhookEditor from "../messages/webhookEditor";
 import ResourceSelect from "../resourceSelect";
+import { MobilePushEditor } from "../templateEditor";
 import { BroadcastState } from "./broadcastsShared";
 
 function EmailControls({
@@ -115,6 +116,17 @@ function ExistingTemplatePreview({ broadcastId }: { broadcastId: string }) {
     case ChannelType.Webhook:
       return (
         <WebhookEditor
+          templateId={messageTemplateId}
+          disabled
+          hidePublisher
+          hideTitle
+          hideUserPropertiesPanel
+          hideEditor
+        />
+      );
+    case ChannelType.MobilePush:
+      return (
+        <MobilePushEditor
           templateId={messageTemplateId}
           disabled
           hidePublisher
@@ -240,6 +252,17 @@ function BroadcastMessageTemplateEditor({
     case ChannelType.Webhook:
       editor = (
         <WebhookEditor
+          templateId={messageTemplateId}
+          disabled={disabled}
+          hidePublisher
+          hideTitle
+          hideUserPropertiesPanel={hideTemplateUserPropertiesPanel}
+        />
+      );
+      break;
+    case ChannelType.MobilePush:
+      editor = (
+        <MobilePushEditor
           templateId={messageTemplateId}
           disabled={disabled}
           hidePublisher

@@ -8,6 +8,7 @@ import KeyboardDoubleArrowDownRoundedIcon from "@mui/icons-material/KeyboardDoub
 import KeyboardDoubleArrowUpRoundedIcon from "@mui/icons-material/KeyboardDoubleArrowUpRounded";
 import {
   Box,
+  Button,
   IconButton,
   Snackbar,
   Stack,
@@ -16,16 +17,20 @@ import {
   Tooltip,
   Typography,
 } from "@mui/material";
+import axios from "axios";
 import { formatDistanceToNow } from "date-fns";
 import deepEqual from "fast-deep-equal";
 import {
+  CompletionStatus,
   DuplicateResourceTypeEnum,
   SegmentResource,
 } from "isomorphic-lib/src/types";
-import { useCallback, useMemo } from "react";
+import { useCallback, useMemo, useState } from "react";
 import { useDebouncedCallback } from "use-debounce";
 import { useImmer } from "use-immer";
 
+import { useAppStorePick } from "../../lib/appStore";
+import { useAuthHeaders, useBaseApiUrl } from "../../lib/authModeProvider";
 import { copyToClipboard } from "../../lib/copyToClipboard";
 import formatCurl from "../../lib/formatCurl";
 import { useComputedPropertyPeriodsQuery } from "../../lib/useComputedPropertyPeriodsQuery";
@@ -236,6 +241,14 @@ export function SegmentEditorV2({
   sx?: SxProps<Theme>;
 }) {
   const { data: segment } = useSegmentQuery(id);
+  const { workspace } = useAppStorePick(["workspace"]);
+  const authHeaders = useAuthHeaders();
+  const baseApiUrl = useBaseApiUrl();
+  const [warehousePreview, setWarehousePreview] = useState<number | null>(null);
+  const [warehousePreviewError, setWarehousePreviewError] = useState<
+    string | null
+  >(null);
+  const [warehousePreviewLoading, setWarehousePreviewLoading] = useState(false);
 
   const [state, setState] = useImmer<SegmentEditorV2State>({
     isDrawerOpen: true,
@@ -320,12 +333,38 @@ export function SegmentEditorV2({
   const handleDefinitionUpdate: SegmentEditorProps["onSegmentChange"] =
     useCallback(
       (s: SegmentResource) => {
+        setWarehousePreview(null);
+        setWarehousePreviewError(null);
         setState((draft) => {
           draft.editedSegment = s;
         });
       },
       [setState],
     );
+  const previewWarehouseAudience = async () => {
+    if (workspace.type !== CompletionStatus.Successful || !segment) return;
+    setWarehousePreviewLoading(true);
+    setWarehousePreviewError(null);
+    try {
+      const response = await axios.post<{ users: number }>(
+        `${baseApiUrl}/segments/warehouse-preview`,
+        {
+          workspaceId: workspace.value.id,
+          definition: state.editedSegment?.definition ?? segment.definition,
+        },
+        { headers: authHeaders },
+      );
+      setWarehousePreview(response.data.users);
+    } catch (error) {
+      setWarehousePreviewError(
+        axios.isAxiosError<{ message?: string }>(error)
+          ? error.response?.data.message ?? error.message
+          : "Audience preview failed",
+      );
+    } finally {
+      setWarehousePreviewLoading(false);
+    }
+  };
   const handleSnackbarClose = useCallback(() => {
     setState((draft) => {
       draft.snackbarOpen = false;
@@ -368,6 +407,28 @@ export function SegmentEditorV2({
             </GreyButton>
             <SettingsMenu commands={commands} />
           </Stack>
+        </Stack>
+        <Stack direction="row" spacing={2} alignItems="center" flexWrap="wrap">
+          <Typography variant="body2" color="text.secondary">
+            Choose events and properties from Stage ClickHouse, then combine
+            rules with AND or OR.
+          </Typography>
+          <Button
+            onClick={() => void previewWarehouseAudience()}
+            disabled={warehousePreviewLoading}
+          >
+            {warehousePreviewLoading ? "Calculating..." : "Estimate reach"}
+          </Button>
+          {warehousePreview !== null && (
+            <Typography variant="body2">
+              {warehousePreview.toLocaleString()} users
+            </Typography>
+          )}
+          {warehousePreviewError && (
+            <Typography variant="body2" color="error">
+              {warehousePreviewError}
+            </Typography>
+          )}
         </Stack>
         <SegmentEditor
           segmentId={id}

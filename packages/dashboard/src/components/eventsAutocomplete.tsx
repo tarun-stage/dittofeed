@@ -3,6 +3,19 @@ import { useMemo } from "react";
 
 import { usePropertiesQuery } from "../lib/usePropertiesQuery";
 
+function filterCatalogOptions(
+  options: string[],
+  input: string,
+  selected: string,
+) {
+  const search = (input || selected).trim().toLowerCase();
+  return (
+    search
+      ? options.filter((option) => option.toLowerCase().includes(search))
+      : options
+  ).slice(0, 100);
+}
+
 export function PropertiesAutocomplete({
   disabled,
   sx,
@@ -26,6 +39,9 @@ export function PropertiesAutocomplete({
       freeSolo
       sx={sx}
       options={properties?.properties[event] ?? []}
+      filterOptions={(options, { inputValue }) =>
+        filterCatalogOptions(options, inputValue, property)
+      }
       onChange={(_event, newValue) => {
         if (newValue === null) {
           onPropertyChange("");
@@ -79,6 +95,9 @@ export function EventNamesAutocomplete({
       freeSolo
       sx={sx}
       options={events ?? []}
+      filterOptions={(options, { inputValue }) =>
+        filterCatalogOptions(options, inputValue, event)
+      }
       onInputChange={(_event, newEvent) => {
         if (newEvent === undefined || newEvent === null) {
           return;

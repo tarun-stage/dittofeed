@@ -54,6 +54,10 @@ import {
 } from "../../userEvents";
 import { findAllUserPropertyAssignments } from "../../userProperties";
 import {
+  getStageWarehouseUserProperties,
+  STAGE_WAREHOUSE_USER_PROPERTY_NAMES,
+} from "../../users";
+import {
   recordNodeProcessed,
   RecordNodeProcessedParams,
 } from "../recordNodeProcessed";
@@ -205,7 +209,7 @@ async function sendMessageInner({
   } else if (deprecatedContext) {
     context = [deprecatedContext];
   }
-  const [userPropertyAssignments, journey, subscriptionGroup] =
+  const [localUserPropertyAssignments, journey, subscriptionGroup, warehouse] =
     await Promise.all([
       findAllUserPropertyAssignments({ userId, workspaceId, context }),
       db().query.journey.findFirst({ where: eq(dbJourney.id, journeyId) }),
@@ -216,7 +220,27 @@ async function sendMessageInner({
             subscriptionGroupId,
           })
         : null,
+      config().enableStageWarehouseAudiences
+        ? getStageWarehouseUserProperties({ userIds: [userId] })
+        : null,
     ]);
+
+  let userPropertyAssignments = localUserPropertyAssignments;
+  if (warehouse) {
+    const sourcePropertyNames = new Set<string>(
+      STAGE_WAREHOUSE_USER_PROPERTY_NAMES,
+    );
+    userPropertyAssignments = Object.entries(
+      localUserPropertyAssignments,
+    ).reduce<Record<string, JSONValue>>((assignments, [name, value]) => {
+      if (sourcePropertyNames.has(name)) return assignments;
+      return { ...assignments, [name]: value };
+    }, {});
+    Object.assign(
+      userPropertyAssignments,
+      warehouse.get(userId)?.properties ?? { id: userId },
+    );
+  }
 
   const subscriptionGroupDetails = subscriptionGroup
     ? {

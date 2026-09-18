@@ -575,6 +575,7 @@ export default function BroadcastsTable() {
           message: broadcastConfigMessage,
           rateLimit: 10,
           batchSize: 100,
+          audienceSource: "StageWarehouse",
         } satisfies BroadcastV2Config,
       };
       createBroadcastMutation.mutate(newBroadcastData, {
@@ -584,7 +585,13 @@ export default function BroadcastsTable() {
           setSnackbarOpen(true);
           setDialogOpen(false);
           setBroadcastName("");
-          universalRouter.push(`/broadcasts/v2`, { id: data.id });
+          window.location.assign(
+            universalRouter.mapUrl(
+              "/broadcasts/v2",
+              { id: data.id },
+              { includeBasePath: true },
+            ),
+          );
         },
         onError: (_error) => {
           // console.error("Failed to create broadcast:", error);
