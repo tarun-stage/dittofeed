@@ -4745,6 +4745,13 @@ export const SearchDeliveriesResponseItem = Type.Union([
     }),
     BaseDeliveryItem,
   ]),
+  Type.Composite([
+    Type.Object({
+      status: Type.String(),
+      variant: MessageMobilePushSuccess,
+    }),
+    BaseDeliveryItem,
+  ]),
   // Deprecated
   Type.Composite([
     Type.Object({

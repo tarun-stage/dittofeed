@@ -117,6 +117,10 @@ export function humanizeStatus(status: string) {
       return "Delivered";
     case InternalEventType.SmsFailed:
       return "Failed";
+    case InternalEventType.MobilePushDelivered:
+      return "Delivered";
+    case InternalEventType.MobilePushClicked:
+      return "Clicked";
     default:
       return status;
   }
@@ -457,7 +461,7 @@ export function DeliveriesTable({
             const { request, response } = variant;
             body = JSON.stringify({ request, response }, null, 2);
           } else {
-            body = variant.body;
+            body = variant.body ?? null;
           }
 
           if (item.variant.type === ChannelType.Email) {

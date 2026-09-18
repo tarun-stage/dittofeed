@@ -573,6 +573,8 @@ export async function getSummarizedData({
           '${InternalEventType.EmailClicked}',
           '${InternalEventType.EmailBounced}',
           '${InternalEventType.SmsFailed}',
+          '${InternalEventType.MobilePushDelivered}',
+          '${InternalEventType.MobilePushClicked}',
           '${InternalEventType.WebhookDelivered}',
           '${InternalEventType.WebhookRead}',
           '${InternalEventType.WebhookClicked}',

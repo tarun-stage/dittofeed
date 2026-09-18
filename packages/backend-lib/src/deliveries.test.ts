@@ -20,6 +20,7 @@ import {
   KnownBatchTrackData,
   MessageSendSuccess,
   MessageSendSuccessVariant,
+  MobilePushProviderType,
   SmsProviderType,
 } from "./types";
 import { createWorkspace } from "./workspaces";
@@ -2473,6 +2474,39 @@ describe("deliveries", () => {
       };
       const result = parseSearchDeliveryRow(row);
       expect(result).not.toBeNull();
+    });
+
+    it("parses mobile push delivery rows", () => {
+      const row: SearchDeliveryRow = {
+        sent_at: "2026-09-18 09:26:11.000",
+        updated_at: "2026-09-18 09:26:11.000",
+        last_event: InternalEventType.MobilePushDelivered,
+        origin_message_id: randomUUID(),
+        user_or_anonymous_id: randomUUID(),
+        workspace_id: randomUUID(),
+        is_anonymous: 0,
+        properties: JSON.stringify({
+          broadcastId: randomUUID(),
+          templateId: randomUUID(),
+          variant: {
+            type: ChannelType.MobilePush,
+            provider: {
+              type: MobilePushProviderType.Firebase,
+              messageId: "projects/stage/messages/test-message-id",
+            },
+            to: "firebase-device-token",
+            title: "Test title",
+            body: "Test body",
+          },
+        }),
+      };
+
+      const result = parseSearchDeliveryRow(row);
+
+      expect(result).not.toBeNull();
+      expect(result && "variant" in result ? result.variant.type : null).toBe(
+        ChannelType.MobilePush,
+      );
     });
   });
   describe("getDeliveryBody", () => {
