@@ -292,6 +292,7 @@ async function getStageWarehouseUsers({
   channel: ChannelType;
 }): Promise<{ users: GetUsersResponseItem[]; nextCursor?: string }> {
   await ensureStageWarehouseAudienceTable();
+  const effectiveLimit = Math.max(limit, 500);
   const snapshotResult = await clickhouseClient().query({
     query: `
       SELECT user_id
@@ -308,7 +309,7 @@ async function getStageWarehouseUsers({
       broadcastId,
       runId,
       cursor: cursor ?? "",
-      limit,
+      limit: effectiveLimit,
     },
     format: "JSONEachRow",
   });
@@ -333,12 +334,14 @@ async function getStageWarehouseUsers({
     workspaceId,
     broadcastId,
     now,
-    limit,
+    limit: effectiveLimit,
   });
   return {
     users: filteredUsers,
     nextCursor:
-      snapshotRows.length === limit ? snapshotRows.at(-1)?.user_id : undefined,
+      snapshotRows.length === effectiveLimit
+        ? snapshotRows.at(-1)?.user_id
+        : undefined,
   };
 }
 

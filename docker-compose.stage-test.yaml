@@ -49,7 +49,7 @@ x-app-environment: &app-environment
 
 services:
   lite:
-    image: stage-dittofeed-lite:v0.24.0-alpha.17-stage-ui12-guard1
+    image: stage-dittofeed-lite:v0.24.0-alpha.17-stage-ui12-guard2
     container_name: stage-dittofeed-lite
     restart: unless-stopped
     command:
@@ -87,7 +87,7 @@ services:
       - dittofeed
 
   worker:
-    image: stage-dittofeed-lite:v0.24.0-alpha.17-stage-ui12
+    image: stage-dittofeed-lite:v0.24.0-alpha.17-stage-ui12-guard2
     container_name: stage-dittofeed-worker
     restart: unless-stopped
     command:
@@ -143,7 +143,7 @@ services:
       - dittofeed
 
   selective-stream:
-    image: stage-dittofeed-lite:v0.24.0-alpha.17-stage-ui12
+    image: stage-dittofeed-lite:v0.24.0-alpha.17-stage-ui12-guard2
     container_name: stage-dittofeed-selective-stream
     profiles:
       - streaming
