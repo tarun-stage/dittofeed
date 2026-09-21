@@ -18,6 +18,7 @@ import {
   SegmentDefinition,
   SegmentNode,
   SegmentNodeType,
+  SegmentResource,
 } from "isomorphic-lib/src/types";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useDebouncedCallback } from "use-debounce";
@@ -35,9 +36,11 @@ import { BroadcastState } from "./broadcastsShared";
 function BroadcastSegmentEditor({
   broadcastId,
   disabled,
+  onDefinitionChange,
 }: {
   broadcastId: string;
   disabled?: boolean;
+  onDefinitionChange?: () => void;
 }) {
   const { workspace } = useAppStorePick(["workspace"]);
   const updateSegmentsMutation = useUpdateSegmentsMutation();
@@ -93,14 +96,21 @@ function BroadcastSegmentEditor({
 
   const segmentsUpdateMutation = useUpdateSegmentsMutation();
 
+  const persistSegmentChange = useDebouncedCallback((s: SegmentResource) => {
+    segmentsUpdateMutation.mutate({
+      id: s.id,
+      definition: s.definition,
+      name: s.name,
+    });
+  }, 1500);
   const updateSegmentCallback: SegmentEditorProps["onSegmentChange"] =
-    useDebouncedCallback((s) => {
-      segmentsUpdateMutation.mutate({
-        id: s.id,
-        definition: s.definition,
-        name: s.name,
-      });
-    }, 1500);
+    useCallback(
+      (s: SegmentResource) => {
+        onDefinitionChange?.();
+        persistSegmentChange(s);
+      },
+      [onDefinitionChange, persistSegmentChange],
+    );
 
   if (segmentId === undefined || !isInternalSegment) {
     return null;
@@ -193,15 +203,6 @@ export default function Recipients({ state }: { state: BroadcastState }) {
     // Only include external dependencies that determine the initial state
   }, [broadcastQuery.data, state.id, workspace]);
 
-  const handleSubscriptionGroupChange = useCallback(
-    (resourceId: string | null) => {
-      broadcastMutation.mutate({
-        subscriptionGroupId: resourceId,
-      });
-    },
-    [broadcastMutation],
-  );
-
   const handleSegmentChange = useCallback(
     (resourceId: string | null) => {
       broadcastMutation.mutate({
@@ -214,7 +215,6 @@ export default function Recipients({ state }: { state: BroadcastState }) {
   // Data is available now, assign to const for type narrowing
   const broadcast = broadcastQuery.data;
   const disabled = broadcast?.status !== "Draft";
-  const channel = broadcast?.config.message.type;
 
   if (broadcastQuery.isLoading) {
     return null;
@@ -225,7 +225,6 @@ export default function Recipients({ state }: { state: BroadcastState }) {
   }
 
   const currentSegmentId = broadcast.segmentId ?? undefined;
-  const currentSubscriptionGroupId = broadcast.subscriptionGroupId ?? undefined;
   const previewWarehouseAudience = async () => {
     if (workspace.type !== CompletionStatus.Successful) return;
     setWarehousePreviewLoading(true);
@@ -252,20 +251,6 @@ export default function Recipients({ state }: { state: BroadcastState }) {
     }
   };
 
-  let subscriptionGroupSelect: React.ReactNode = null;
-  if (channel) {
-    subscriptionGroupSelect = (
-      <ResourceSelect
-        resourceType={ResourceType.SubscriptionGroup}
-        value={currentSubscriptionGroupId ?? null}
-        onChange={handleSubscriptionGroupChange}
-        channel={channel}
-        disabled={disabled}
-        label="Subscription Group"
-        currentPageLabel={broadcast.name || "Broadcast"}
-      />
-    );
-  }
   let segmentSelect: React.ReactNode;
   switch (selectExistingSegment) {
     case "existing":
@@ -284,7 +269,14 @@ export default function Recipients({ state }: { state: BroadcastState }) {
       break;
     case "new":
       segmentSelect = (
-        <BroadcastSegmentEditor broadcastId={state.id} disabled={disabled} />
+        <BroadcastSegmentEditor
+          broadcastId={state.id}
+          disabled={disabled}
+          onDefinitionChange={() => {
+            setWarehousePreview(null);
+            setWarehousePreviewError(null);
+          }}
+        />
       );
       break;
     case null:
@@ -325,16 +317,7 @@ export default function Recipients({ state }: { state: BroadcastState }) {
         ) : null}
       </Stack>
       <Typography variant="caption" sx={{ mb: -1 }}>
-        Subscription Group (Required)
-      </Typography>
-      <Box sx={{ maxWidth: 600 }}>{subscriptionGroupSelect}</Box>
-      <Typography variant="body2" sx={{ mt: 1, maxWidth: 600 }}>
-        Select a Subscription Group (required). Optionally, you can select an
-        additional segment which will further restrict the set of messaged users
-        to those both in the selected subscription group and the segment.
-      </Typography>
-      <Typography variant="caption" sx={{ mb: -1 }}>
-        Segment (Optional)
+        Audience Rules
       </Typography>
       <ToggleButtonGroup
         value={selectExistingSegment}
