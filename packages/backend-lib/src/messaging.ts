@@ -2488,7 +2488,6 @@ export async function sendWebhook({
 }
 
 const CELETEL_CAMPAIGN_TRANSPORT = "celetel://campaign";
-const CELETEL_LOGIN_URL = "https://one.celetel.com/api/auth/login";
 const CELETEL_CAMPAIGN_URL =
   "https://one.celetel.com/api/waba/campaign/create-campaign";
 
@@ -2507,16 +2506,6 @@ const CeletelCampaignSecret = Type.Object({
   endpoint: Type.Optional(Type.String()),
   apiKey: Type.Optional(Type.String()),
   wabaNumber: Type.Optional(Type.String()),
-});
-
-const CeletelLoginResponse = Type.Object({
-  token: Type.Optional(Type.String()),
-  access_token: Type.Optional(Type.String()),
-  data: Type.Optional(
-    Type.Object({
-      token: Type.Optional(Type.String()),
-    }),
-  ),
 });
 
 const CeletelJwksResponse = Type.Object({
@@ -2545,58 +2534,11 @@ const CeletelPortalLoginResponse = Type.Object({
   ),
 });
 
-const celetelTokenCache = new Map<
-  string,
-  { token: string; expiresAt: number }
->();
-const celetelTokenRequests = new Map<string, Promise<string>>();
 const celetelPortalTokenCache = new Map<
   string,
   { token: string; expiresAt: number }
 >();
 const celetelPortalTokenRequests = new Map<string, Promise<string>>();
-
-async function getCeletelToken({
-  email,
-  password,
-}: {
-  email: string;
-  password: string;
-}): Promise<string> {
-  const cached = celetelTokenCache.get(email);
-  if (cached && cached.expiresAt > Date.now()) return cached.token;
-
-  const pending = celetelTokenRequests.get(email);
-  if (pending) return pending;
-
-  const request = axios
-    .request({
-      url: CELETEL_LOGIN_URL,
-      method: "POST",
-      data: { email, password },
-      timeout: 8000,
-      headers: { "Content-Type": "application/json" },
-    })
-    .then((response) => {
-      const parsed = schemaValidateWithErr(response.data, CeletelLoginResponse);
-      if (parsed.isErr()) {
-        throw new Error("Celetel login returned an invalid response");
-      }
-      const token =
-        parsed.value.token ??
-        parsed.value.data?.token ??
-        parsed.value.access_token;
-      if (!token) throw new Error("Celetel login returned no token");
-      celetelTokenCache.set(email, {
-        token,
-        expiresAt: Date.now() + 50 * 60 * 1000,
-      });
-      return token;
-    })
-    .finally(() => celetelTokenRequests.delete(email));
-  celetelTokenRequests.set(email, request);
-  return request;
-}
 
 function base64Url(value: ArrayBuffer): string {
   return Buffer.from(value).toString("base64url");
@@ -2843,7 +2785,50 @@ async function sendCeletelCampaign({
     throw new Error("Celetel webhook configuration is invalid");
   }
 
-  const { endpoint, apiKey, wabaNumber } = secretResult.value;
+  const { email, password, wabaId, endpoint, apiKey, wabaNumber } =
+    secretResult.value;
+  if (email && password && wabaId) {
+    const token = await getCeletelPortalToken({ email, password });
+    const campaignName = (
+      configResult.value.campaignName ??
+      `dittofeed-${messageTags?.messageId ?? randomUUID()}`
+    )
+      .replace(/[^a-zA-Z0-9_-]+/g, "-")
+      .slice(0, 120);
+    const components = (configResult.value.components ?? []).filter(
+      (component) => Array.isArray(recordValue(component)?.parameters),
+    );
+    const form = new URLSearchParams({
+      waba_id: wabaId,
+      campaignName,
+      message: JSON.stringify({
+        name: configResult.value.templateName,
+        language: { code: configResult.value.languageCode },
+        components,
+      }),
+      numbers: JSON.stringify([normalizeCeletelPhone(configResult.value.to)]),
+    });
+    const response = await axios.request({
+      url: CELETEL_CAMPAIGN_URL,
+      method: "POST",
+      data: form.toString(),
+      timeout: 30000,
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/x-www-form-urlencoded",
+        Accept: "application/json",
+      },
+    });
+    const providerResponse = schemaValidateWithErr(
+      response.data,
+      Type.Object({ success: Type.Optional(Type.Boolean()) }),
+    );
+    if (providerResponse.isOk() && providerResponse.value.success === false) {
+      throw new Error("Celetel rejected the WhatsApp campaign");
+    }
+    return response;
+  }
+
   if (endpoint && apiKey && wabaNumber) {
     const umsUrl = new URL(endpoint);
     if (umsUrl.protocol !== "https:" || umsUrl.hostname !== "one.celetel.com") {
@@ -2873,53 +2858,7 @@ async function sendCeletelCampaign({
     });
   }
 
-  if (
-    !secretResult.value.email ||
-    !secretResult.value.password ||
-    !secretResult.value.wabaId
-  ) {
-    throw new Error("Celetel webhook credentials are incomplete");
-  }
-
-  const token = await getCeletelToken({
-    email: secretResult.value.email,
-    password: secretResult.value.password,
-  });
-  const campaignName = (
-    configResult.value.campaignName ??
-    `dittofeed-${messageTags?.messageId ?? randomUUID()}`
-  )
-    .replace(/[^a-zA-Z0-9_-]+/g, "-")
-    .slice(0, 120);
-  const form = new URLSearchParams({
-    waba_id: secretResult.value.wabaId,
-    campaignName,
-    message: JSON.stringify({
-      name: configResult.value.templateName,
-      language: { code: configResult.value.languageCode },
-      components: configResult.value.components ?? [],
-    }),
-    numbers: JSON.stringify([normalizeCeletelPhone(configResult.value.to)]),
-  });
-  const response = await axios.request({
-    url: CELETEL_CAMPAIGN_URL,
-    method: "POST",
-    data: form.toString(),
-    timeout: 30000,
-    headers: {
-      Authorization: `Bearer ${token}`,
-      "Content-Type": "application/x-www-form-urlencoded",
-      Accept: "application/json",
-    },
-  });
-  const providerResponse = schemaValidateWithErr(
-    response.data,
-    Type.Object({ success: Type.Optional(Type.Boolean()) }),
-  );
-  if (providerResponse.isOk() && providerResponse.value.success === false) {
-    throw new Error("Celetel rejected the WhatsApp campaign");
-  }
-  return response;
+  throw new Error("Celetel webhook credentials are incomplete");
 }
 
 function publicPushImageUrl(imageUrl?: string): string | undefined {

@@ -1,5 +1,5 @@
 import axios, { AxiosHeaders, AxiosResponse } from "axios";
-import { randomUUID } from "crypto";
+import { randomUUID, webcrypto } from "crypto";
 import { SecretNames } from "isomorphic-lib/src/constants";
 import { unwrap } from "isomorphic-lib/src/resultHandling/resultUtils";
 import {
@@ -1025,7 +1025,7 @@ describe("messaging", () => {
                   to: "{{ user.phone }}",
                   templateName: "whatsapp_test",
                   languageCode: "hi",
-                  components: [],
+                  components: [{ type: "body", body: { text: "hello" } }],
                 },
               },
               secret: {
@@ -1039,21 +1039,31 @@ describe("messaging", () => {
           } satisfies WebhookTemplateResource,
         }),
       );
-      mockAxios.request
-        .mockResolvedValueOnce({
-          data: { token: "celetel-access-token" },
-          status: 200,
-          statusText: "OK",
-          headers: {},
-          config: {},
-        })
-        .mockResolvedValueOnce({
-          data: { success: true },
-          status: 200,
-          statusText: "OK",
-          headers: {},
-          config: {},
-        });
+      const keyPair = await webcrypto.subtle.generateKey(
+        {
+          name: "RSA-OAEP",
+          modulusLength: 2048,
+          publicExponent: new Uint8Array([1, 0, 1]),
+          hash: "SHA-256",
+        },
+        true,
+        ["encrypt", "decrypt"],
+      );
+      const publicKey = await webcrypto.subtle.exportKey(
+        "jwk",
+        keyPair.publicKey,
+      );
+      mockAxios.get.mockResolvedValueOnce({ data: { keys: [publicKey] } });
+      mockAxios.post.mockResolvedValueOnce({
+        data: { accessToken: "celetel-portal-token" },
+      });
+      mockAxios.request.mockResolvedValueOnce({
+        data: { success: true },
+        status: 200,
+        statusText: "OK",
+        headers: {},
+        config: {},
+      });
 
       const result = await sendWebhook({
         workspaceId: workspace.id,
@@ -1068,32 +1078,37 @@ describe("messaging", () => {
       });
 
       expect(result.isOk()).toBe(true);
-      expect(mockAxios.request.mock.calls).toHaveLength(2);
+      expect(mockAxios.get.mock.calls[0]).toEqual([
+        "https://one.celetel.com/api/user-mgmt/v1/.well-known/jwks",
+        expect.any(Object),
+      ]);
+      expect(mockAxios.post.mock.calls[0]).toEqual([
+        "https://one.celetel.com/api/user-mgmt/v1/auth/login",
+        expect.any(Object),
+        expect.any(Object),
+      ]);
+      expect(mockAxios.request.mock.calls).toHaveLength(1);
       expect(mockAxios.request.mock.calls[0]?.[0]).toMatchObject({
-        url: "https://one.celetel.com/api/auth/login",
-        data: {
-          email: "celetel@example.com",
-          password: "secret-password",
-        },
-      });
-      expect(mockAxios.request.mock.calls[1]?.[0]).toMatchObject({
         url: "https://one.celetel.com/api/waba/campaign/create-campaign",
         headers: {
-          Authorization: "Bearer celetel-access-token",
+          Authorization: "Bearer celetel-portal-token",
           "Content-Type": "application/x-www-form-urlencoded",
           Accept: "application/json",
         },
       });
-      const campaignRequest = mockAxios.request.mock.calls[1]?.[0];
+      const campaignRequest = mockAxios.request.mock.calls[0]?.[0];
       expect(typeof campaignRequest?.data).toBe("string");
       if (typeof campaignRequest?.data === "string") {
         expect(campaignRequest.data).toContain("919876543210");
+        expect(campaignRequest.data).toContain(
+          encodeURIComponent('"components":[]'),
+        );
       }
       if (result.isErr()) return;
       if (result.value.type !== InternalEventType.MessageSent) return;
       expect(JSON.stringify(result.value)).not.toContain("secret-password");
       expect(JSON.stringify(result.value)).not.toContain(
-        "celetel-access-token",
+        "celetel-portal-token",
       );
     });
 
