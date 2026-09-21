@@ -172,7 +172,7 @@ export default async function contentController(fastify: FastifyInstance) {
       }
 
       let identifierKey: string | undefined;
-      if (channel !== ChannelType.Webhook) {
+      if (channel !== ChannelType.Webhook && channel !== ChannelType.InApp) {
         identifierKey = CHANNEL_IDENTIFIERS[channel];
       }
 
@@ -446,6 +446,23 @@ export default async function contentController(fastify: FastifyInstance) {
         case ChannelType.MobilePush: {
           throw new Error("Mobile push templates unimplemented");
         }
+        case ChannelType.InApp: {
+          definition = {
+            type: ChannelType.InApp,
+            trigger: "app_foreground",
+            template: "modal",
+            title: "New message",
+            body: "Message body",
+            cta: [],
+            dismissible: true,
+            displayPriority: 50,
+            minGapBetweenShowsSec: 3600,
+            maxPerSession: 1,
+            maxPer24h: 1,
+            maxPer7d: 3,
+          };
+          break;
+        }
       }
       const result = await upsertMessageTemplate({
         ...request.body,
@@ -478,7 +495,9 @@ export default async function contentController(fastify: FastifyInstance) {
           if (!node || node.type !== JourneyNodeType.MessageNode) {
             return;
           }
-          node.variant.type = request.body.type;
+          if (request.body.type !== ChannelType.InApp) {
+            node.variant.type = request.body.type;
+          }
 
           await tx
             .update(schema.journey)

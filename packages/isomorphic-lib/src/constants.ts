@@ -65,6 +65,7 @@ export const EMAIL_PROVIDER_TYPE_TO_SECRET_NAME: Record<
 export const CHANNEL_NAMES: Record<ChannelType, string> = {
   [ChannelType.Sms]: "SMS",
   [ChannelType.Email]: "Email",
+  [ChannelType.InApp]: "In-App Message",
   [ChannelType.MobilePush]: "Push Notification",
   [ChannelType.Webhook]: "Webhook",
 };

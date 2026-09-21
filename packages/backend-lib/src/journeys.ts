@@ -447,6 +447,9 @@ export async function getJourneyMessageStats({
         case ChannelType.MobilePush: {
           continue;
         }
+        case ChannelType.InApp: {
+          continue;
+        }
         case ChannelType.Webhook: {
           // TODO [DF-471]
           continue;

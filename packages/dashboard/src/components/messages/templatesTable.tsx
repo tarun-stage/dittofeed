@@ -271,6 +271,9 @@ function NameCell({ row, getValue }: CellContext<Row, unknown>) {
       case ChannelType.Webhook:
         channelPath = "webhook";
         break;
+      case ChannelType.InApp:
+        channelPath = "in-app";
+        break;
       default:
         assertUnreachable(definition);
     }
@@ -327,6 +330,9 @@ function ChannelCell({ row }: CellContext<Row, unknown>) {
         break;
       case ChannelType.Webhook:
         channelText = "Webhook";
+        break;
+      case ChannelType.InApp:
+        channelText = "In-App";
         break;
       default:
         assertUnreachable(definition);
@@ -542,6 +548,9 @@ export default function TemplatesTable({
           case ChannelType.Webhook:
             channelPath = "webhook";
             break;
+          case ChannelType.InApp:
+            channelPath = "in-app";
+            break;
           default:
             assertUnreachable(selectedChannel);
         }
@@ -587,6 +596,8 @@ export default function TemplatesTable({
                 return "Mobile Push";
               case ChannelType.Webhook:
                 return "Webhook";
+              case ChannelType.InApp:
+                return "In-App";
               default:
                 assertUnreachable(row.definition);
                 return "Unknown";

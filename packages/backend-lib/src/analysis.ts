@@ -499,10 +499,58 @@ export async function getSummarizedData({
           InternalEventType.MobilePushClicked,
         ];
         break;
+      case ChannelType.InApp:
+        eventsToTrack = [
+          InternalEventType.InAppImpression,
+          InternalEventType.InAppClicked,
+          InternalEventType.InAppDismissed,
+        ];
+        break;
       default:
         eventsToTrack = [InternalEventType.MessageSent];
         break;
     }
+  }
+
+  if (channel === ChannelType.InApp) {
+    const result = await chQuery({
+      query: `
+        SELECT
+          uniqExactIf(origin_message_id, event = '${InternalEventType.InAppImpression}') AS deliveries,
+          uniqExactIf(origin_message_id, event = '${InternalEventType.InAppImpression}') AS sent,
+          0 AS opens,
+          uniqExactIf(origin_message_id, event = '${InternalEventType.InAppClicked}') AS clicks,
+          0 AS bounces
+        FROM internal_events AS ie
+        WHERE ie.workspace_id = ${workspaceIdParam}
+          AND ie.processing_time >= parseDateTimeBestEffort(${qb.addQueryValue(startDate, "String")}, 'UTC')
+          AND ie.processing_time <= parseDateTimeBestEffort(${qb.addQueryValue(endDate, "String")}, 'UTC')
+          AND ie.event IN (
+            '${InternalEventType.InAppImpression}',
+            '${InternalEventType.InAppClicked}',
+            '${InternalEventType.InAppDismissed}'
+          )
+          ${sentSummaryFilterClauses}
+      `,
+      query_params: qb.getQueries(),
+      format: "JSONEachRow",
+    });
+    const [row] = await result.json<{
+      deliveries: string;
+      sent: string;
+      opens: string;
+      clicks: string;
+      bounces: string;
+    }>();
+    return {
+      summary: {
+        deliveries: Number(row?.deliveries ?? 0),
+        sent: Number(row?.sent ?? 0),
+        opens: 0,
+        clicks: Number(row?.clicks ?? 0),
+        bounces: 0,
+      },
+    };
   }
 
   // Build channel-specific summary fields with cascading logic

@@ -110,6 +110,8 @@ function humanizeChannel(channel: ChannelType): string {
       return "Webhook";
     case ChannelType.MobilePush:
       return "Mobile Push";
+    case ChannelType.InApp:
+      return "In-App";
   }
 }
 

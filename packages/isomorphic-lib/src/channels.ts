@@ -1,7 +1,7 @@
 import { ChannelType } from "./types";
 
 export const CHANNEL_IDENTIFIERS: Record<
-  Exclude<ChannelType, "Webhook">,
+  Exclude<ChannelType, "Webhook" | "InApp">,
   string
 > = {
   [ChannelType.Email]: "email",

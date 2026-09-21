@@ -442,6 +442,7 @@ function MessageNodeFields({
       if (props.type === JourneyNodeType.MessageNode) {
         // eslint-disable-next-line @typescript-eslint/consistent-type-assertions
         const channel = e.target.value as ChannelType;
+        if (channel === ChannelType.InApp) return;
         const defaultSubscriptionGroup = getDefaultSubscriptionGroup({
           channel,
           subscriptionGroups: subscriptionGroups ?? [],

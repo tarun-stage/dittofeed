@@ -1,0 +1,1 @@
+ALTER TYPE "DBChannelType" ADD VALUE IF NOT EXISTS 'InApp';

@@ -10,7 +10,11 @@ import {
 
 // Only import the activity types
 import type * as activities from "../temporal/activities";
-import { BroadcastV2Status, DBWorkspaceOccupantType } from "../types";
+import {
+  BroadcastV2Status,
+  ChannelType,
+  DBWorkspaceOccupantType,
+} from "../types";
 import type { SendMessagesResponse } from "./activities";
 
 const { defaultWorkerLogger: logger } = proxySinks<LoggerSinks>();
@@ -134,6 +138,43 @@ export async function broadcastWorkflowV2({
       });
       await updateStatus("Cancelled");
     });
+
+    if (broadcast.config.message.type === ChannelType.InApp) {
+      if (broadcast.scheduledAt) {
+        const { defaultTimezone } = broadcast.config;
+        if (!defaultTimezone) {
+          await updateStatus("Failed");
+          return;
+        }
+        const { timestamp } = await getZonedTimestamp({
+          naiveDateTimeString: broadcast.scheduledAt,
+          timeZone: defaultTimezone,
+        });
+        if (!timestamp) {
+          await updateStatus("Failed");
+          return;
+        }
+        await updateStatus("Scheduled");
+        const sleepTime = timestamp - Date.now();
+        if (sleepTime > 0) await sleep(sleepTime);
+      }
+
+      const { computedPropertiesActivityTaskQueue } = await config([
+        "computedPropertiesActivityTaskQueue",
+      ]);
+      const { recomputeBroadcastSegment } = proxyActivities<typeof activities>({
+        startToCloseTimeout: "5 minutes",
+        taskQueue: computedPropertiesActivityTaskQueue,
+      });
+      await recomputeBroadcastSegment({
+        workspaceId,
+        broadcastId,
+        now: Date.now(),
+      });
+      await updateStatus("Running");
+      await wf.condition(() => status === "Cancelled");
+      return;
+    }
 
     const sendAllMessages = async function sendAllMessages({
       timezones,

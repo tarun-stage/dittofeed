@@ -607,6 +607,10 @@ export function sendMessagesFactory(sender: Sender) {
                 channel: ChannelType.MobilePush,
               };
               break;
+            case ChannelType.InApp:
+              throw new Error(
+                "In-app broadcasts are served through the pull API",
+              );
           }
           logger().debug({ messageVariant }, "Sending broadcast message");
           const result = await sender(messageVariant);

@@ -3,7 +3,10 @@ import {
   Box,
   Button,
   CircularProgress,
+  FormControlLabel,
+  MenuItem,
   Stack,
+  Switch,
   TextField,
   ToggleButton,
   ToggleButtonGroup,
@@ -21,6 +24,7 @@ import {
   ChannelType,
   CompletionStatus,
   EmailContentsType,
+  InAppTemplateResource,
   LowCodeEmailDefaultType,
 } from "isomorphic-lib/src/types";
 import { useSnackbar } from "notistack";
@@ -40,6 +44,195 @@ import WebhookEditor from "../messages/webhookEditor";
 import ResourceSelect from "../resourceSelect";
 import { MobilePushEditor } from "../templateEditor";
 import { BroadcastState } from "./broadcastsShared";
+
+function InAppEditor({
+  templateId,
+  disabled,
+}: {
+  templateId: string;
+  disabled: boolean;
+}) {
+  const { data: messageTemplate } = useMessageTemplateQuery(templateId);
+  const update = useMessageTemplateUpdateMutation();
+  const definition = messageTemplate?.definition;
+  const [draft, setDraft] = useState<InAppTemplateResource | null>(null);
+
+  useEffect(() => {
+    if (definition?.type === ChannelType.InApp) setDraft(definition);
+  }, [definition]);
+
+  if (!messageTemplate || !draft) return null;
+  const primaryCta = draft.cta[0] ?? {
+    id: "primary",
+    label: "Open",
+    deeplink: "stage://home",
+    style: "primary" as const,
+  };
+  const updateCta = (values: Partial<typeof primaryCta>) =>
+    setDraft({ ...draft, cta: [{ ...primaryCta, ...values }] });
+
+  return (
+    <Stack spacing={2} sx={{ maxWidth: 900 }}>
+      <Stack direction={{ xs: "column", md: "row" }} spacing={2}>
+        <TextField
+          fullWidth
+          label="Trigger event"
+          value={draft.trigger}
+          disabled={disabled}
+          onChange={(event) =>
+            setDraft({ ...draft, trigger: event.target.value })
+          }
+          helperText="app_foreground, screen_view, payment_failed..."
+        />
+        <TextField
+          fullWidth
+          label="Screen (optional)"
+          value={draft.screen ?? ""}
+          disabled={disabled}
+          onChange={(event) =>
+            setDraft({ ...draft, screen: event.target.value || undefined })
+          }
+        />
+        <TextField
+          select
+          fullWidth
+          label="Layout"
+          value={draft.template}
+          disabled={disabled}
+          onChange={(event) => {
+            const template = event.target.value;
+            if (template === "modal" || template === "bottom_banner") {
+              setDraft({ ...draft, template });
+            }
+          }}
+        >
+          <MenuItem value="modal">Modal</MenuItem>
+          <MenuItem value="bottom_banner">Bottom banner</MenuItem>
+        </TextField>
+      </Stack>
+      <TextField
+        fullWidth
+        label="Title"
+        value={draft.title}
+        disabled={disabled}
+        onChange={(event) => setDraft({ ...draft, title: event.target.value })}
+      />
+      <TextField
+        fullWidth
+        multiline
+        minRows={3}
+        label="Body"
+        value={draft.body}
+        disabled={disabled}
+        onChange={(event) => setDraft({ ...draft, body: event.target.value })}
+      />
+      <TextField
+        fullWidth
+        label="Image URL (HTTPS)"
+        value={draft.imageUrl ?? ""}
+        disabled={disabled}
+        onChange={(event) =>
+          setDraft({ ...draft, imageUrl: event.target.value || undefined })
+        }
+      />
+      <Stack direction={{ xs: "column", md: "row" }} spacing={2}>
+        <TextField
+          fullWidth
+          label="CTA label"
+          value={primaryCta.label}
+          disabled={disabled}
+          onChange={(event) => updateCta({ label: event.target.value })}
+        />
+        <TextField
+          fullWidth
+          label="CTA deeplink"
+          value={primaryCta.deeplink}
+          disabled={disabled}
+          onChange={(event) => updateCta({ deeplink: event.target.value })}
+        />
+      </Stack>
+      <Stack direction={{ xs: "column", md: "row" }} spacing={2}>
+        <TextField
+          type="number"
+          label="Priority"
+          value={draft.displayPriority}
+          disabled={disabled}
+          onChange={(event) =>
+            setDraft({ ...draft, displayPriority: Number(event.target.value) })
+          }
+        />
+        <TextField
+          type="number"
+          label="Minimum gap (seconds)"
+          value={draft.minGapBetweenShowsSec}
+          disabled={disabled}
+          onChange={(event) =>
+            setDraft({
+              ...draft,
+              minGapBetweenShowsSec: Number(event.target.value),
+            })
+          }
+        />
+        <TextField
+          type="number"
+          label="Max / session"
+          value={draft.maxPerSession}
+          disabled={disabled}
+          onChange={(event) =>
+            setDraft({ ...draft, maxPerSession: Number(event.target.value) })
+          }
+        />
+        <TextField
+          type="number"
+          label="Max / 24h"
+          value={draft.maxPer24h}
+          disabled={disabled}
+          onChange={(event) =>
+            setDraft({ ...draft, maxPer24h: Number(event.target.value) })
+          }
+        />
+        <TextField
+          type="number"
+          label="Max / 7d"
+          value={draft.maxPer7d}
+          disabled={disabled}
+          onChange={(event) =>
+            setDraft({ ...draft, maxPer7d: Number(event.target.value) })
+          }
+        />
+      </Stack>
+      <FormControlLabel
+        control={
+          <Switch
+            checked={draft.dismissible}
+            disabled={disabled}
+            onChange={(_, checked) =>
+              setDraft({ ...draft, dismissible: checked })
+            }
+          />
+        }
+        label="Dismissible"
+      />
+      {!disabled && (
+        <Button
+          variant="contained"
+          disabled={
+            update.isPending || !draft.trigger || !draft.title || !draft.body
+          }
+          onClick={() =>
+            update.mutate({
+              id: messageTemplate.id,
+              name: messageTemplate.name,
+              definition: draft,
+            })
+          }
+        >
+          {update.isPending ? "Saving..." : "Save in-app message"}
+        </Button>
+      )}
+    </Stack>
+  );
+}
 
 interface WhatsAppTemplatePreview {
   templateName: string;
@@ -255,6 +448,8 @@ function ExistingTemplatePreview({ broadcastId }: { broadcastId: string }) {
           hideEditor
         />
       );
+    case ChannelType.InApp:
+      return <InAppEditor templateId={messageTemplateId} disabled />;
     default:
       return null;
   }
@@ -389,6 +584,11 @@ function BroadcastMessageTemplateEditor({
           hideTitle
           hideUserPropertiesPanel={hideTemplateUserPropertiesPanel}
         />
+      );
+      break;
+    case ChannelType.InApp:
+      editor = (
+        <InAppEditor templateId={messageTemplateId} disabled={disabled} />
       );
       break;
     default:

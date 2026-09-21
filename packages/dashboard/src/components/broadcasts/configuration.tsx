@@ -161,6 +161,7 @@ export default function Configuration({
           { id: SmsProviderType.Test, label: "Test" },
         ];
       case ChannelType.Webhook:
+      case ChannelType.InApp:
         return [];
       case ChannelType.MobilePush:
         return [
@@ -190,6 +191,7 @@ export default function Configuration({
         override = message.providerOverride ?? null;
         break;
       case ChannelType.Webhook:
+      case ChannelType.InApp:
         return null;
       case ChannelType.MobilePush:
         override = message.providerOverride ?? null;
@@ -207,7 +209,10 @@ export default function Configuration({
     if (!broadcast?.messageTemplateId) {
       e.push("You must select a message template.");
     }
-    if (!broadcast?.subscriptionGroupId) {
+    if (
+      broadcast?.config.message.type !== ChannelType.InApp &&
+      !broadcast?.subscriptionGroupId
+    ) {
       e.push("You must select a subscription group.");
     }
     if (broadcast?.scheduledAt && !broadcast.config.defaultTimezone) {
@@ -529,6 +534,9 @@ export default function Configuration({
                 };
                 break;
               }
+              case ChannelType.InApp:
+                newMessage = message;
+                break;
               default:
                 assertUnreachable(message);
             }

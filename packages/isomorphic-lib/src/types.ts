@@ -99,6 +99,9 @@ export enum InternalEventType {
   SmsFailed = "DFSmsFailed",
   MobilePushDelivered = "DFMobilePushDelivered",
   MobilePushClicked = "DFMobilePushClicked",
+  InAppImpression = "DFInAppImpression",
+  InAppClicked = "DFInAppClicked",
+  InAppDismissed = "DFInAppDismissed",
   WebhookProcessed = "DFWebhookProcessed",
   WebhookSent = "DFWebhookSent",
   WebhookDelivered = "DFWebhookDelivered",
@@ -125,6 +128,9 @@ export const StatusEventsList = [
   InternalEventType.SmsFailed,
   InternalEventType.MobilePushDelivered,
   InternalEventType.MobilePushClicked,
+  InternalEventType.InAppImpression,
+  InternalEventType.InAppClicked,
+  InternalEventType.InAppDismissed,
   InternalEventType.WebhookProcessed,
   InternalEventType.WebhookSent,
   InternalEventType.WebhookDelivered,
@@ -145,6 +151,7 @@ export enum SubscriptionGroupType {
 
 export const ChannelType = {
   Email: "Email",
+  InApp: "InApp",
   MobilePush: "MobilePush",
   Sms: "Sms",
   Webhook: "Webhook",
@@ -1086,6 +1093,13 @@ export const MobilePushMessageVariant = Type.Object({
 
 export type MobilePushMessageVariant = Static<typeof MobilePushMessageVariant>;
 
+export const InAppMessageVariant = Type.Object({
+  type: Type.Literal(ChannelType.InApp),
+  templateId: Type.String(),
+});
+
+export type InAppMessageVariant = Static<typeof InAppMessageVariant>;
+
 export enum TwilioSenderOverrideType {
   MessageSid = "MessageSid",
   PhoneNumber = "PhoneNumber",
@@ -1787,6 +1801,39 @@ export type MobilePushTemplateResource = Static<
   typeof MobilePushTemplateResource
 >;
 
+export const InAppTemplateResource = Type.Object(
+  {
+    type: Type.Literal(ChannelType.InApp),
+    trigger: Type.String({ minLength: 1, maxLength: 100 }),
+    screen: Type.Optional(Type.String({ maxLength: 200 })),
+    template: Type.Union([
+      Type.Literal("modal"),
+      Type.Literal("bottom_banner"),
+    ]),
+    title: Type.String({ maxLength: 200 }),
+    body: Type.String({ maxLength: 2000 }),
+    imageUrl: Type.Optional(Type.String({ maxLength: 2000 })),
+    cta: Type.Array(
+      Type.Object({
+        id: Type.String({ maxLength: 100 }),
+        label: Type.String({ maxLength: 100 }),
+        deeplink: Type.String({ maxLength: 2000 }),
+        style: Type.Union([Type.Literal("primary"), Type.Literal("secondary")]),
+      }),
+      { maxItems: 2 },
+    ),
+    dismissible: Type.Boolean(),
+    displayPriority: Type.Integer({ minimum: 0, maximum: 100 }),
+    minGapBetweenShowsSec: Type.Integer({ minimum: 0 }),
+    maxPerSession: Type.Integer({ minimum: 1 }),
+    maxPer24h: Type.Integer({ minimum: 1 }),
+    maxPer7d: Type.Integer({ minimum: 1 }),
+  },
+  { description: "In-app message template resource" },
+);
+
+export type InAppTemplateResource = Static<typeof InAppTemplateResource>;
+
 const SmsContents = Type.Object({
   body: Type.String(),
   dltContentTemplateId: Type.Optional(Type.String()),
@@ -1848,6 +1895,7 @@ export const WebhookTemplateResource = Type.Composite(
 export type WebhookTemplateResource = Static<typeof WebhookTemplateResource>;
 
 export const MessageTemplateResourceDefinition = Type.Union([
+  InAppTemplateResource,
   MobilePushTemplateResource,
   EmailTemplateResource,
   SmsTemplateResource,
@@ -1873,6 +1921,7 @@ export const ParsedWebhookBody = Type.Object({
 export type ParsedWebhookBody = Static<typeof ParsedWebhookBody>;
 
 export const MessageTemplateResourceDraft = Type.Union([
+  InAppTemplateResource,
   MobilePushTemplateResource,
   EmailTemplateResource,
   SmsTemplateResource,
@@ -6140,6 +6189,7 @@ export const BroadcastV2Config = Type.Object({
     // Defined separately to allow workspace member specific providers.
     BroadcastEmailMessageVariant,
     BroadcastSmsMessageVariant,
+    Type.Omit(InAppMessageVariant, ["templateId"]),
     Type.Omit(MobilePushMessageVariant, ["templateId"]),
     Type.Omit(WebhookMessageVariant, ["templateId"]),
   ]),

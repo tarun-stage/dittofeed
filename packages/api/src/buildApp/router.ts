@@ -39,6 +39,7 @@ export default async function router(
   fastify: FastifyInstance,
   opts?: BuildAppOpts,
 ) {
+  await fastify.register(indexController, { inAppCallbacksOnly: true });
   await fastify.register(indexController, { prefix: "/api" });
 
   // endpoints with standard authorization

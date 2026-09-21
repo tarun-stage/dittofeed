@@ -33,6 +33,21 @@ export function getDefaultMessageTemplateDefinition(
         body: "Notification body",
         android: { notification: { channelId: "channel1" } },
       };
+    case ChannelType.InApp:
+      return {
+        type: ChannelType.InApp,
+        trigger: "app_foreground",
+        template: "modal",
+        title: "New message",
+        body: "Message body",
+        cta: [],
+        dismissible: true,
+        displayPriority: 50,
+        minGapBetweenShowsSec: 3600,
+        maxPerSession: 1,
+        maxPer24h: 1,
+        maxPer7d: 3,
+      };
     default:
       assertUnreachable(channelType);
   }

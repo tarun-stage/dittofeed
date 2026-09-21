@@ -330,7 +330,7 @@ function buildTags({
 }
 
 export interface TemplateEditorProps {
-  channel: ChannelType;
+  channel: Exclude<ChannelType, "InApp">;
   templateId: string;
   disabled?: boolean;
   hideTitle?: boolean;

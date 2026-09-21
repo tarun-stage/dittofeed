@@ -33,6 +33,7 @@ export default function Deliveries({ state }: { state: BroadcastState }) {
     },
   );
   const summary = summaryQuery.data?.summary;
+  const isInApp = broadcast?.config.message.type === ChannelType.InApp;
   const awaitingReceipt = Math.max(
     (summary?.sent ?? 0) - (summary?.deliveries ?? 0),
     0,
@@ -56,9 +57,18 @@ export default function Deliveries({ state }: { state: BroadcastState }) {
     <Stack spacing={2} sx={{ width: "100%", height: "100%" }}>
       <Stack direction="row" spacing={2} flexWrap="wrap" useFlexGap>
         {[
-          { label: "Sent to FCM", value: summary?.sent ?? 0 },
-          { label: "Delivered to device", value: summary?.deliveries ?? 0 },
-          { label: "Awaiting receipt", value: awaitingReceipt },
+          {
+            label: isInApp ? "Impressions" : "Sent to FCM",
+            value: summary?.sent ?? 0,
+          },
+          {
+            label: isInApp ? "Shown" : "Delivered to device",
+            value: summary?.deliveries ?? 0,
+          },
+          {
+            label: isInApp ? "Not applicable" : "Awaiting receipt",
+            value: isInApp ? "—" : awaitingReceipt,
+          },
           { label: "Clicked", value: summary?.clicks ?? 0 },
           { label: "Delivery rate", value: deliveryRate },
         ].map((metric) => (
@@ -82,8 +92,9 @@ export default function Deliveries({ state }: { state: BroadcastState }) {
         ))}
       </Stack>
       <Typography variant="body2" color="text.secondary">
-        Delivered is confirmed only after the app sends a push delivery receipt.
-        Sent means Firebase accepted the notification request.
+        {isInApp
+          ? "An impression is counted when the app confirms the in-app message was shown."
+          : "Delivered is confirmed only after the app sends a push delivery receipt. Sent means Firebase accepted the notification request."}
       </Typography>
       <DeliveriesTableV2
         {...tableProps}

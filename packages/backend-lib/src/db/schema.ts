@@ -34,6 +34,7 @@ export const dbBroadcastStatusV2 = pgEnum("DBBroadcastStatusV2", [
 export const dbBroadcastVersion = pgEnum("DBBroadcastVersion", ["V1", "V2"]);
 export const dbChannelType = pgEnum("DBChannelType", [
   "Email",
+  "InApp",
   "MobilePush",
   "Sms",
   "Webhook",

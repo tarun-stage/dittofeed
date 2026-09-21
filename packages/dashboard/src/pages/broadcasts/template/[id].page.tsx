@@ -365,6 +365,9 @@ const BroadcastTemplateInner: NextPage<BroadcastTemplateProps> =
           />
         );
         break;
+      case ChannelType.InApp:
+        templateEditor = null;
+        break;
       default:
         assertUnreachable(channel);
     }

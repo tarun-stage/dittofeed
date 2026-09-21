@@ -16,6 +16,7 @@ import {
   MoreVert as MoreVertIcon,
   NotificationsActiveOutlined,
   OpenInNew as OpenInNewIcon,
+  PhoneIphoneOutlined,
   ScheduleOutlined,
   Search as SearchIcon,
   SmsOutlined,
@@ -300,6 +301,8 @@ function ChannelCell({ row }: CellContext<Row, unknown>) {
     label = "SMS";
   } else if (channel === ChannelType.Webhook) {
     label = "WhatsApp";
+  } else if (channel === ChannelType.InApp) {
+    label = "In-App";
   }
   return <Chip label={label} size="small" variant="outlined" />;
 }
@@ -568,6 +571,11 @@ export default function BroadcastsTable() {
             type: ChannelType.MobilePush,
           };
           break;
+        case ChannelType.InApp:
+          broadcastConfigMessage = {
+            type: ChannelType.InApp,
+          };
+          break;
         default:
           // Should not happen with the ToggleButtonGroup
           return;
@@ -634,7 +642,8 @@ export default function BroadcastsTable() {
           <Stack spacing={0.5}>
             <Typography variant="h4">Campaigns</Typography>
             <Typography variant="body2" color="text.secondary">
-              Create and monitor Push, WhatsApp, Email, and SMS campaigns.
+              Create and monitor Push, WhatsApp, In-App, Email, and SMS
+              campaigns.
             </Typography>
           </Stack>
           <Stack direction="row" spacing={1} alignItems="center">
@@ -966,6 +975,10 @@ export default function BroadcastsTable() {
             <ToggleButton value={ChannelType.Webhook} aria-label="WhatsApp">
               <WhatsApp fontSize="small" sx={{ mr: 1 }} />
               WhatsApp
+            </ToggleButton>
+            <ToggleButton value={ChannelType.InApp} aria-label="In-App">
+              <PhoneIphoneOutlined fontSize="small" sx={{ mr: 1 }} />
+              In-App Message
             </ToggleButton>
             <ToggleButton value={ChannelType.Email} aria-label="Email">
               <EmailOutlined fontSize="small" sx={{ mr: 1 }} />
