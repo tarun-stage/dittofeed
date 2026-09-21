@@ -7,6 +7,7 @@ import {
   CheckCircleOutline,
   Computer,
   ContentCopy as ContentCopyIcon,
+  EmailOutlined,
   Home,
   KeyboardArrowLeft,
   KeyboardArrowRight,
@@ -17,6 +18,7 @@ import {
   OpenInNew as OpenInNewIcon,
   ScheduleOutlined,
   Search as SearchIcon,
+  SmsOutlined,
   UnfoldMore,
   WhatsApp,
 } from "@mui/icons-material";
@@ -294,6 +296,8 @@ function ChannelCell({ row }: CellContext<Row, unknown>) {
   let label: string = channel;
   if (channel === ChannelType.MobilePush) {
     label = "Push";
+  } else if (channel === ChannelType.Sms) {
+    label = "SMS";
   } else if (channel === ChannelType.Webhook) {
     label = "WhatsApp";
   }
@@ -630,7 +634,7 @@ export default function BroadcastsTable() {
           <Stack spacing={0.5}>
             <Typography variant="h4">Campaigns</Typography>
             <Typography variant="body2" color="text.secondary">
-              Create and monitor Push and WhatsApp campaigns.
+              Create and monitor Push, WhatsApp, Email, and SMS campaigns.
             </Typography>
           </Stack>
           <Stack direction="row" spacing={1} alignItems="center">
@@ -953,6 +957,7 @@ export default function BroadcastsTable() {
             onChange={handleChannelChange}
             aria-label="channel type"
             size="small"
+            sx={{ flexWrap: "wrap" }}
           >
             <ToggleButton value={ChannelType.MobilePush} aria-label="Push">
               <NotificationsActiveOutlined fontSize="small" sx={{ mr: 1 }} />
@@ -961,6 +966,14 @@ export default function BroadcastsTable() {
             <ToggleButton value={ChannelType.Webhook} aria-label="WhatsApp">
               <WhatsApp fontSize="small" sx={{ mr: 1 }} />
               WhatsApp
+            </ToggleButton>
+            <ToggleButton value={ChannelType.Email} aria-label="Email">
+              <EmailOutlined fontSize="small" sx={{ mr: 1 }} />
+              Email
+            </ToggleButton>
+            <ToggleButton value={ChannelType.Sms} aria-label="SMS">
+              <SmsOutlined fontSize="small" sx={{ mr: 1 }} />
+              SMS
             </ToggleButton>
           </ToggleButtonGroup>
         </DialogContent>
