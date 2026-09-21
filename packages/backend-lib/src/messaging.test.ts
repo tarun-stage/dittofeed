@@ -1,4 +1,4 @@
-import axios from "axios";
+import axios, { AxiosHeaders, AxiosResponse } from "axios";
 import { randomUUID } from "crypto";
 import { SecretNames } from "isomorphic-lib/src/constants";
 import { unwrap } from "isomorphic-lib/src/resultHandling/resultUtils";
@@ -10,10 +10,11 @@ import {
   WebhookTemplateResource,
   WorkspaceTypeAppEnum,
 } from "isomorphic-lib/src/types";
+import { ok } from "neverthrow";
 
 import config from "./config";
+import { generateDigest } from "./crypto";
 import { insert } from "./db";
-import { getStoredEmailForViewInBrowser } from "./viewInBrowser";
 import {
   messageTemplate as dbMessageTemplate,
   secret as dbSecret,
@@ -21,9 +22,12 @@ import {
   userProperty as dbUserProperty,
   workspace as dbWorkspace,
 } from "./db/schema";
+import { sendNotification as sendFcmNotification } from "./destinations/fcm";
 import {
   batchMessageUsers,
+  normalizeCeletelWhatsAppTemplates,
   sendEmail,
+  sendMobilePush,
   sendSms,
   sendWebhook,
   upsertMessageTemplate,
@@ -44,6 +48,8 @@ import {
   MessageSkippedType,
   MessageTags,
   MessageTemplate,
+  MobilePushProviderType,
+  MobilePushTemplateResource,
   SmsProviderType,
   SmsTemplateResource,
   SubscriptionGroup,
@@ -52,10 +58,13 @@ import {
   UserPropertyDefinitionType,
   Workspace,
 } from "./types";
+import { getStoredEmailForViewInBrowser } from "./viewInBrowser";
 
 jest.mock("axios");
+jest.mock("./destinations/fcm");
 
 const mockAxios = axios as jest.Mocked<typeof axios>;
+const mockSendFcmNotification = jest.mocked(sendFcmNotification);
 
 async function setupEmailTemplate(workspace: Workspace) {
   const templatePromise = insert({
@@ -94,6 +103,35 @@ async function setupEmailTemplate(workspace: Workspace) {
   ]);
   return { template, subscriptionGroup };
 }
+
+describe("normalizeCeletelWhatsAppTemplates", () => {
+  it("normalizes Celetel and Meta template-list response shapes", () => {
+    expect(
+      normalizeCeletelWhatsAppTemplates({
+        data: {
+          data: {
+            0: {
+              name: "welcome_hi",
+              language: "hi",
+              status: "APPROVED",
+              category: "MARKETING",
+              components: [{ type: "BODY", text: "Namaste {{1}}" }],
+            },
+          },
+        },
+      }),
+    ).toEqual([
+      {
+        name: "welcome_hi",
+        languageCode: "hi",
+        status: "APPROVED",
+        category: "MARKETING",
+        components: [{ type: "BODY", text: "Namaste {{1}}" }],
+        bodyText: "Namaste {{1}}",
+      },
+    ]);
+  });
+});
 
 describe("messaging", () => {
   let workspace: Workspace;
@@ -428,7 +466,8 @@ describe("messaging", () => {
         );
 
         // Verify List-Unsubscribe header also uses custom identifierKey
-        const listUnsubscribeHeader = result.variant.headers?.["List-Unsubscribe"];
+        const listUnsubscribeHeader =
+          result.variant.headers?.["List-Unsubscribe"];
         expect(listUnsubscribeHeader).toBeDefined();
         // Extract URL from header format: <url>
         const headerUrlMatch = listUnsubscribeHeader?.match(/<([^>]+)>/);
@@ -521,6 +560,94 @@ describe("messaging", () => {
   });
 
   describe("sendSms", () => {
+    it("sends a DLT-compliant request through Celetel", async () => {
+      const [template, subscriptionGroup] = await Promise.all([
+        insert({
+          table: dbMessageTemplate,
+          values: {
+            id: randomUUID(),
+            workspaceId: workspace.id,
+            name: `template-${randomUUID()}`,
+            updatedAt: new Date(),
+            createdAt: new Date(),
+            definition: {
+              type: ChannelType.Sms,
+              body: "Hello from STAGE",
+              dltContentTemplateId: "dlt-template-1",
+            } satisfies SmsTemplateResource,
+          },
+        }).then(unwrap),
+        upsertSubscriptionGroup({
+          workspaceId: workspace.id,
+          name: `group-${randomUUID()}`,
+          type: SubscriptionGroupType.OptOut,
+          channel: ChannelType.Sms,
+        }).then(unwrap),
+        upsertSubscriptionSecret({ workspaceId: workspace.id }),
+        upsertSmsProvider({
+          workspaceId: workspace.id,
+          setDefault: true,
+          config: {
+            type: SmsProviderType.Celetel,
+            endpoint: "https://sms.example.com/send",
+            username: "stage-user",
+            password: "stage-password",
+            senderId: "STAGEN",
+            dltPrincipalEntityId: "dlt-pe-1",
+          },
+        }),
+      ]);
+      const response: AxiosResponse = {
+        data: { status: "success" },
+        status: 200,
+        statusText: "OK",
+        headers: {},
+        config: { headers: new AxiosHeaders() },
+      };
+      mockAxios.get.mockResolvedValueOnce(response);
+
+      const result = await sendSms({
+        workspaceId: workspace.id,
+        templateId: template.id,
+        messageTags: {
+          workspaceId: workspace.id,
+          templateId: template.id,
+          runId: "run-id-1",
+          nodeId: "node-id-1",
+          messageId: "message-id-1",
+        } satisfies MessageTags,
+        userPropertyAssignments: {
+          id: "user-1",
+          phone: "+91 84272-69387",
+        },
+        userId: "user-1",
+        useDraft: false,
+        subscriptionGroupDetails: {
+          id: subscriptionGroup.id,
+          name: subscriptionGroup.name,
+          type: SubscriptionGroupType.OptOut,
+          action: null,
+        },
+        providerOverride: SmsProviderType.Celetel,
+      });
+
+      expect(result.isOk()).toBe(true);
+      expect(mockAxios.get).toHaveBeenCalledWith(
+        "https://sms.example.com/send",
+        expect.objectContaining({
+          params: expect.objectContaining({
+            username: "stage-user",
+            password: "stage-password",
+            to: "918427269387",
+            from: "STAGEN",
+            text: "Hello from STAGE",
+            dltPrincipalEntityId: "dlt-pe-1",
+            dltContentId: "dlt-template-1",
+          }),
+        }),
+      );
+    });
+
     describe("when sent from a child workspace", () => {
       let childWorkspace: Workspace;
       let parentWorkspace: Workspace;
@@ -623,7 +750,264 @@ describe("messaging", () => {
     });
   });
 
+  describe("sendMobilePush", () => {
+    let templateId: string;
+
+    beforeEach(async () => {
+      mockSendFcmNotification.mockReset();
+      const template = unwrap(
+        await upsertMessageTemplate({
+          name: randomUUID(),
+          workspaceId: workspace.id,
+          definition: {
+            type: ChannelType.MobilePush,
+            title: "Hello {{ user.firstName }}",
+            body: "Your episode is ready.",
+            imageUrl: "https://example.com/image.jpg",
+            android: { notification: { channelId: "channel1" } },
+          } satisfies MobilePushTemplateResource,
+        }),
+      );
+      templateId = template.id;
+    });
+
+    it("records a Test provider send without Firebase credentials", async () => {
+      const result = await sendMobilePush({
+        workspaceId: workspace.id,
+        templateId,
+        userPropertyAssignments: {
+          id: "user-1",
+          firstName: "Asha",
+          deviceToken: "test-device-token",
+        },
+        userId: "user-1",
+        useDraft: false,
+        providerOverride: MobilePushProviderType.Test,
+      });
+
+      expect(result.isOk()).toBe(true);
+      if (result.isErr()) return;
+      if (result.value.type !== InternalEventType.MessageSent) return;
+      expect(result.value.variant).toMatchObject({
+        type: ChannelType.MobilePush,
+        to: "test-device-token",
+        title: "Hello Asha",
+        body: "Your episode is ready.",
+        provider: { type: MobilePushProviderType.Test },
+      });
+      expect(mockSendFcmNotification).not.toHaveBeenCalled();
+    });
+
+    it("sends a rendered Firebase notification to the user's device token", async () => {
+      const originalEventsUrl = process.env.DITTOFEED_MOBILE_EVENTS_URL;
+      process.env.DITTOFEED_MOBILE_EVENTS_URL =
+        "https://engage.stage.in/api/dittofeed/mobile-push";
+      const fcmKey = JSON.stringify({
+        project_id: "stage-test",
+        client_email: "firebase@example.com",
+        private_key: "private-key",
+      });
+      unwrap(
+        await insert({
+          table: dbSecret,
+          values: {
+            id: randomUUID(),
+            workspaceId: workspace.id,
+            name: SecretNames.Fcm,
+            value: fcmKey,
+          },
+        }),
+      );
+      mockSendFcmNotification.mockResolvedValue(ok("fcm-message-id"));
+
+      const result = await sendMobilePush({
+        workspaceId: workspace.id,
+        templateId,
+        userPropertyAssignments: {
+          id: "user-1",
+          firstName: "Asha",
+          deviceToken: "real-device-token",
+        },
+        userId: "user-1",
+        useDraft: false,
+        providerOverride: MobilePushProviderType.Firebase,
+        messageTags: {
+          messageId: "message-1",
+          journeyId: "journey-1",
+        },
+      });
+      if (originalEventsUrl === undefined) {
+        delete process.env.DITTOFEED_MOBILE_EVENTS_URL;
+      } else {
+        process.env.DITTOFEED_MOBILE_EVENTS_URL = originalEventsUrl;
+      }
+
+      expect(result.isOk()).toBe(true);
+      expect(mockSendFcmNotification).toHaveBeenCalledWith({
+        key: fcmKey,
+        routingKeys: [],
+        token: "real-device-token",
+        android: { priority: "high" },
+        apns: {
+          headers: { "apns-priority": "10" },
+          payload: {
+            aps: {
+              alert: {
+                title: "Hello Asha",
+                body: "Your episode is ready.",
+              },
+              sound: "default",
+              mutableContent: true,
+              category: "stage_engage_default",
+            },
+          },
+          fcmOptions: { imageUrl: "https://example.com/image.jpg" },
+        },
+        data: {
+          wzrk_pn: "true",
+          wzrk_cid: "channel1",
+          wzrk_id: `message-1.${generateDigest({
+            rawBody: `${workspace.id}:message-1`,
+            sharedSecret: fcmKey,
+          })}`,
+          campaign_id: `c_df_${workspace.id}`,
+          source: "dittofeed",
+          notification_type: "standard",
+          title: "Hello Asha",
+          message: "Your episode is ready.",
+          nt: "Hello Asha",
+          nm: "Your episode is ready.",
+          dittofeedMessageId: "message-1",
+          dittofeedUserId: "user-1",
+          dittofeedReceiptToken: generateDigest({
+            rawBody: `${workspace.id}:message-1:user-1`,
+            sharedSecret: fcmKey,
+          }),
+          dittofeedJourneyId: "journey-1",
+          dittofeedEventsUrl: `https://engage.stage.in/api/dittofeed/mobile-push?workspaceId=${workspace.id}`,
+          thumbnail: "https://example.com/image.jpg",
+          wzrk_bp: "https://example.com/image.jpg",
+        },
+      });
+      if (result.isErr()) return;
+      if (result.value.type !== InternalEventType.MessageSent) return;
+      expect(result.value.variant).toMatchObject({
+        type: ChannelType.MobilePush,
+        to: "real-device-token",
+        provider: {
+          type: MobilePushProviderType.Firebase,
+          messageId: "fcm-message-id",
+        },
+      });
+    });
+  });
+
   describe("sendWebhook", () => {
+    it("sends a Celetel campaign without exposing provider credentials", async () => {
+      unwrap(
+        await insert({
+          table: dbSecret,
+          values: {
+            id: randomUUID(),
+            workspaceId: workspace.id,
+            name: SecretNames.Webhook,
+            configValue: {
+              type: ChannelType.Webhook,
+              celetelEmail: "celetel@example.com",
+              celetelPassword: "secret-password",
+              celetelWabaId: "waba-1",
+            },
+          },
+        }),
+      );
+      const template = unwrap(
+        await upsertMessageTemplate({
+          name: randomUUID(),
+          workspaceId: workspace.id,
+          definition: {
+            type: ChannelType.Webhook,
+            identifierKey: "phone",
+            body: JSON.stringify({
+              config: {
+                url: "celetel://campaign",
+                method: "POST",
+                responseType: "json",
+                data: {
+                  to: "{{ user.phone }}",
+                  templateName: "whatsapp_test",
+                  languageCode: "hi",
+                  components: [],
+                },
+              },
+              secret: {
+                data: {
+                  email: "{{ secrets.celetelEmail }}",
+                  password: "{{ secrets.celetelPassword }}",
+                  wabaId: "{{ secrets.celetelWabaId }}",
+                },
+              },
+            } satisfies ParsedWebhookBody),
+          } satisfies WebhookTemplateResource,
+        }),
+      );
+      mockAxios.request
+        .mockResolvedValueOnce({
+          data: { token: "celetel-access-token" },
+          status: 200,
+          statusText: "OK",
+          headers: {},
+          config: {},
+        })
+        .mockResolvedValueOnce({
+          data: { success: true },
+          status: 200,
+          statusText: "OK",
+          headers: {},
+          config: {},
+        });
+
+      const result = await sendWebhook({
+        workspaceId: workspace.id,
+        templateId: template.id,
+        userPropertyAssignments: {
+          id: "user-1",
+          phone: "+91 98765 43210",
+        },
+        messageTags: { messageId: "message-1" },
+        useDraft: false,
+        userId: "user-1",
+      });
+
+      expect(result.isOk()).toBe(true);
+      expect(mockAxios.request.mock.calls).toHaveLength(2);
+      expect(mockAxios.request.mock.calls[0]?.[0]).toMatchObject({
+        url: "https://one.celetel.com/api/auth/login",
+        data: {
+          email: "celetel@example.com",
+          password: "secret-password",
+        },
+      });
+      expect(mockAxios.request.mock.calls[1]?.[0]).toMatchObject({
+        url: "https://one.celetel.com/api/waba/campaign/create-campaign",
+        headers: {
+          Authorization: "Bearer celetel-access-token",
+          "Content-Type": "application/x-www-form-urlencoded",
+          Accept: "application/json",
+        },
+      });
+      const campaignRequest = mockAxios.request.mock.calls[1]?.[0];
+      expect(typeof campaignRequest?.data).toBe("string");
+      if (typeof campaignRequest?.data === "string") {
+        expect(campaignRequest.data).toContain("919876543210");
+      }
+      if (result.isErr()) return;
+      if (result.value.type !== InternalEventType.MessageSent) return;
+      expect(JSON.stringify(result.value)).not.toContain("secret-password");
+      expect(JSON.stringify(result.value)).not.toContain(
+        "celetel-access-token",
+      );
+    });
+
     describe("when your webhook includes screts", () => {
       let templateId: string;
       beforeEach(async () => {

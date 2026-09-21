@@ -37,7 +37,15 @@ const BaseRawConfigProps = {
   clickhouseDatabase: Type.Optional(Type.String()),
   clickhouseUser: Type.String(),
   clickhousePassword: Type.String(),
-  defaultUserJourneyMaxAttempts: Type.Optional(Type.String({ format: "naturalNumber" })),
+  enableStageWarehouseAudiences: Type.Optional(BoolStr),
+  sourceClickhouseHost: Type.Optional(Type.String()),
+  sourceClickhousePort: Type.Optional(Type.String()),
+  sourceClickhouseSecure: Type.Optional(BoolStr),
+  sourceClickhouseUser: Type.Optional(Type.String()),
+  sourceClickhousePassword: Type.Optional(Type.String()),
+  defaultUserJourneyMaxAttempts: Type.Optional(
+    Type.String({ format: "naturalNumber" }),
+  ),
   kafkaBrokers: Type.Optional(Type.String()),
   kafkaUsername: Type.Optional(Type.String()),
   kafkaPassword: Type.Optional(Type.String()),
@@ -301,6 +309,7 @@ export type Config = Overwrite<
     enableAdditionalDashboardSettings: boolean;
     enableBlobStorage: boolean;
     enableMobilePush: boolean;
+    enableStageWarehouseAudiences: boolean;
     enableSourceControl: boolean;
     exportLogsHyperDx: boolean;
     enableColdStorage: boolean;
@@ -357,6 +366,7 @@ export type Config = Overwrite<
 export const SECRETS = new Set<keyof Config>([
   "databasePassword",
   "clickhousePassword",
+  "sourceClickhousePassword",
   "kafkaPassword",
   "hubspotClientSecret",
   "secretKey",
@@ -603,6 +613,8 @@ function parseRawConfig(rawConfig: RawConfig): Config {
     bootstrap: rawConfig.bootstrap === "true",
     nodeEnv,
     writeMode,
+    enableStageWarehouseAudiences:
+      rawConfig.enableStageWarehouseAudiences === "true",
     temporalAddress: defaultTemporalAddress(rawConfig.temporalAddress),
     databaseUrl,
     database,
@@ -794,9 +806,12 @@ function parseRawConfig(rawConfig: RawConfig): Config {
       rawConfig.broadcastSendMessagesMaxAttempts,
       5,
     ),
-    defaultUserJourneyMaxAttempts: rawConfig.defaultUserJourneyMaxAttempts !== undefined ? parseInt(
-      rawConfig.defaultUserJourneyMaxAttempts,
-    ) : (nodeEnv === NodeEnvEnum.Test ? 1 : undefined),
+    defaultUserJourneyMaxAttempts:
+      rawConfig.defaultUserJourneyMaxAttempts !== undefined
+        ? parseInt(rawConfig.defaultUserJourneyMaxAttempts)
+        : nodeEnv === NodeEnvEnum.Test
+          ? 1
+          : undefined,
     defaultGetSegmentAndEventDetailsMaxAttempts: parseMaxAttempts(
       rawConfig.defaultGetSegmentAndEventDetailsMaxAttempts,
       nodeEnv === NodeEnvEnum.Test ? 1 : 10,

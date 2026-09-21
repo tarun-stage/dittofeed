@@ -1,4 +1,4 @@
-import { Box, Stack } from "@mui/material";
+import { Box, Stack, Typography } from "@mui/material";
 import { toBroadcastResource } from "backend-lib/src/broadcasts";
 import { db } from "backend-lib/src/db";
 import * as schema from "backend-lib/src/db/schema";
@@ -59,6 +59,13 @@ export default function Events() {
         paddingTop={2}
         sx={{ width: "100%", height: "100%", padding: 2 }}
       >
+        <Stack spacing={0.5} sx={{ width: "100%" }}>
+          <Typography variant="h4">Events</Typography>
+          <Typography variant="body2" color="text.secondary">
+            Explore user events and properties available for segments and
+            journeys.
+          </Typography>
+        </Stack>
         <Box sx={{ width: "100%", height: "100%" }}>
           <UserEventsTable />
         </Box>

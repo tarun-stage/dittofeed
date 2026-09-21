@@ -1,0 +1,48 @@
+server {
+  listen 8080;
+  server_name _;
+
+  resolver 127.0.0.11 valid=10s ipv6=off;
+
+  client_max_body_size 10m;
+  proxy_http_version 1.1;
+  proxy_set_header Host $host;
+  proxy_set_header X-Real-IP $remote_addr;
+  proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+  proxy_set_header X-Forwarded-Proto https;
+  proxy_connect_timeout 10s;
+  proxy_send_timeout 60s;
+  proxy_read_timeout 120s;
+
+  location = /_dittofeed_ingress_health {
+    proxy_pass http://stage-dittofeed-lite:3000/api;
+  }
+
+  location = /api/whatsapp/dlr {
+    proxy_set_header X-Celetel-Webhook-Key "${CELETEL_WEBHOOK_KEY}";
+    proxy_pass http://stage-dittofeed-lite:3000/api/public/webhooks/celetel?workspaceId=a43a776e-fd48-4894-96f7-1f46dbf5bae5&$args;
+  }
+
+    location = /api/dittofeed/mobile-push {
+      proxy_pass http://stage-dittofeed-lite:3000/api/public/webhooks/mobile-push?$args;
+    }
+
+    location ~ "^/c/c_df_([0-9a-fA-F-]{36})/click$" {
+      rewrite "^/c/c_df_([0-9a-fA-F-]{36})/click$" /api/public/webhooks/mobile-push-legacy?workspaceId=$1&event=clicked break;
+      proxy_pass http://stage-dittofeed-lite:3000;
+    }
+
+    location ~ "^/d/c_df_([0-9a-fA-F-]{36})/delivered$" {
+      rewrite "^/d/c_df_([0-9a-fA-F-]{36})/delivered$" /api/public/webhooks/mobile-push-legacy?workspaceId=$1&event=delivered break;
+      proxy_pass http://stage-dittofeed-lite:3000;
+    }
+
+    location ^~ /dittofeed/api/public/apps/ {
+    rewrite ^/dittofeed(/.*)$ $1 break;
+    proxy_pass http://stage-dittofeed-lite:3000;
+  }
+
+  location / {
+    return 404;
+  }
+}

@@ -318,6 +318,7 @@ interface BaseDelivery {
   subject?: string;
   replyTo?: string;
   snippet?: string;
+  imageUrl?: string;
 }
 
 interface EmailDelivery extends BaseDelivery {
@@ -347,7 +348,21 @@ interface WebhookDelivery extends BaseDelivery {
   snippet?: undefined;
 }
 
-type Delivery = EmailDelivery | SmsDelivery | WebhookDelivery;
+interface MobilePushDelivery extends BaseDelivery {
+  channel: typeof ChannelType.MobilePush;
+  from?: undefined;
+  to: string;
+  subject?: undefined;
+  replyTo?: undefined;
+  snippet: string;
+  imageUrl?: string;
+}
+
+type Delivery =
+  | EmailDelivery
+  | SmsDelivery
+  | WebhookDelivery
+  | MobilePushDelivery;
 
 const DeliveriesCountResponseSchema = Type.Object({
   count: Type.Number(),
@@ -811,6 +826,16 @@ export function useDeliveryBodyState({
             ),
           };
           break;
+        case ChannelType.MobilePush:
+          delivery = {
+            ...baseDelivery,
+            channel: ChannelType.MobilePush,
+            body: variant.body ?? "",
+            snippet: variant.title ?? variant.body ?? "Push notification",
+            to: variant.to,
+            imageUrl: variant.imageUrl,
+          };
+          break;
         default:
           assertUnreachable(variant);
       }
@@ -1062,6 +1087,32 @@ export function DeliveriesBody({
         previewHeader = null;
         previewBody = <WebhookPreviewBody body={previewObject.body} />;
         break;
+      case ChannelType.MobilePush:
+        previewHeader = null;
+        previewBody = (
+          <Box sx={{ padding: 2 }}>
+            <Paper
+              variant="outlined"
+              sx={{ padding: 2, borderRadius: 2, maxWidth: 420 }}
+            >
+              {previewObject.imageUrl ? (
+                <Box
+                  component="img"
+                  src={previewObject.imageUrl}
+                  alt="Notification"
+                  sx={{ width: "100%", borderRadius: 1, marginBottom: 1 }}
+                />
+              ) : null}
+              <Typography variant="subtitle1" fontWeight={600}>
+                {previewObject.snippet}
+              </Typography>
+              <Typography variant="body2" color="text.secondary">
+                {previewObject.body}
+              </Typography>
+            </Paper>
+          </Box>
+        );
+        break;
       default:
         assertUnreachable(previewObject);
     }
@@ -1194,7 +1245,7 @@ export function DeliveriesBody({
                     >
                       <Stack direction="row" spacing={1} alignItems="center">
                         <Typography variant="body2" color="text.secondary">
-                          Total deliveries:{" "}
+                          Messages sent:{" "}
                           {countQuery.data?.count !== undefined
                             ? countQuery.data.count.toLocaleString()
                             : "—"}

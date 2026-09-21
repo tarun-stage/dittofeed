@@ -73,7 +73,7 @@ function PreviewHeader({
         height: PREVIEW_HEADER_HEIGHT,
       }}
     >
-      <Typography variant="h6">Broadcast Preview</Typography>
+      <Typography variant="h6">Audience Preview</Typography>
       <Stack direction="row" spacing={2} alignItems="center">
         <RecomputedRecentlyIcon />
         {previewOpen ? (
@@ -189,7 +189,7 @@ function StatusButton({ broadcastId }: { broadcastId: string }) {
   const getButtonText = () => {
     switch (broadcast.status) {
       case "Draft":
-        return "Start Broadcast";
+        return "Launch Campaign";
       case "Running":
         return "Pause";
       case "Paused":

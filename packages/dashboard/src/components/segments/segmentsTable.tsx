@@ -59,13 +59,14 @@ import {
 } from "@tanstack/react-table";
 import { AxiosError } from "axios";
 import formatDistanceToNow from "date-fns/formatDistanceToNow";
-import { DEFAULT_SEGMENT_DEFINITION } from "isomorphic-lib/src/constants";
 import {
   CompletionStatus,
   ComputedPropertyPeriod,
   DuplicateResourceTypeEnum,
   MinimalJourneysResource,
+  RelationalOperators,
   SegmentDefinition,
+  SegmentNodeType,
   SegmentResource,
   SegmentStatusEnum,
 } from "isomorphic-lib/src/types";
@@ -510,7 +511,24 @@ export function SegmentsTable({
   const handleCreateSegment = () => {
     if (segmentName.trim() && !createSegmentMutation.isPending) {
       const newSegmentId = uuid();
-      const definition: SegmentDefinition = DEFAULT_SEGMENT_DEFINITION;
+      const ruleId = uuid();
+      const definition: SegmentDefinition = {
+        entryNode: {
+          type: SegmentNodeType.And,
+          id: uuid(),
+          children: [ruleId],
+        },
+        nodes: [
+          {
+            type: SegmentNodeType.Performed,
+            id: ruleId,
+            event: "",
+            times: 1,
+            timesOperator: RelationalOperators.GreaterThanOrEqual,
+            withinSeconds: 30 * 24 * 60 * 60,
+          },
+        ],
+      };
       createSegmentMutation.mutate({
         id: newSegmentId,
         name: segmentName.trim(),

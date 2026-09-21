@@ -15,24 +15,24 @@ export interface BroadcastStep {
 const BROADCAST_STEPS = [
   {
     key: BroadcastStepKeys.RECIPIENTS,
-    name: "Recipients",
+    name: "Audience",
   },
   {
     key: BroadcastStepKeys.CONTENT,
-    name: "Content",
+    name: "Message",
   },
   {
     key: BroadcastStepKeys.CONFIGURATION,
-    name: "Configuration",
+    name: "Schedule & limits",
   },
   {
     key: BroadcastStepKeys.DELIVERIES,
-    name: "Deliveries",
+    name: "Delivery report",
     afterDraft: true,
   },
   {
     key: BroadcastStepKeys.EVENTS,
-    name: "Events",
+    name: "Activity",
     afterDraft: true,
   },
 ] as const satisfies readonly BroadcastStep[];

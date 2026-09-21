@@ -1,5 +1,4 @@
 // project import
-import NavCard from "./drawerContent/navCard";
 import Navigation from "./drawerContent/navigation";
 import SimpleBar from "./drawerContent/simpleBar";
 
@@ -15,10 +14,7 @@ function DrawerContent() {
         },
       }}
     >
-      <>
-        <Navigation />
-        <NavCard />
-      </>
+      <Navigation />
     </SimpleBar>
   );
 }

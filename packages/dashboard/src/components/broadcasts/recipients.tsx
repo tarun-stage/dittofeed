@@ -1,10 +1,13 @@
 import {
+  Alert,
   Box,
+  Button,
   Stack,
   ToggleButton,
   ToggleButtonGroup,
   Typography,
 } from "@mui/material";
+import axios from "axios";
 import {
   getBroadcastSegmentId,
   getBroadcastSegmentName,
@@ -16,14 +19,14 @@ import {
   SegmentNode,
   SegmentNodeType,
 } from "isomorphic-lib/src/types";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useDebouncedCallback } from "use-debounce";
 
 import { useAppStorePick } from "../../lib/appStore";
+import { useAuthHeaders, useBaseApiUrl } from "../../lib/authModeProvider";
 import { ResourceType } from "../../lib/types";
 import { useBroadcastMutation } from "../../lib/useBroadcastMutation";
 import { useBroadcastQuery } from "../../lib/useBroadcastQuery";
-import { useRecomputeBroadcastSegmentMutation } from "../../lib/useRecomputeBroadcastSegmentMutation";
 import { useUpdateSegmentsMutation } from "../../lib/useUpdateSegmentsMutation";
 import ResourceSelect from "../resourceSelect";
 import SegmentEditor, { SegmentEditorProps } from "../segments/editor";
@@ -37,8 +40,6 @@ function BroadcastSegmentEditor({
   disabled?: boolean;
 }) {
   const { workspace } = useAppStorePick(["workspace"]);
-  const recomputeBroadcastSegmentMutation =
-    useRecomputeBroadcastSegmentMutation();
   const updateSegmentsMutation = useUpdateSegmentsMutation();
   const broadcastMutation = useBroadcastMutation(broadcastId);
   const { data: broadcast } = useBroadcastQuery(broadcastId);
@@ -85,9 +86,6 @@ function BroadcastSegmentEditor({
       {
         onSuccess: () => {
           broadcastMutation.mutate({ segmentId: newSegmentId });
-          recomputeBroadcastSegmentMutation.mutate({
-            broadcastId,
-          });
         },
       },
     );
@@ -97,20 +95,11 @@ function BroadcastSegmentEditor({
 
   const updateSegmentCallback: SegmentEditorProps["onSegmentChange"] =
     useDebouncedCallback((s) => {
-      segmentsUpdateMutation.mutate(
-        {
-          id: s.id,
-          definition: s.definition,
-          name: s.name,
-        },
-        {
-          onSuccess: () => {
-            recomputeBroadcastSegmentMutation.mutate({
-              broadcastId,
-            });
-          },
-        },
-      );
+      segmentsUpdateMutation.mutate({
+        id: s.id,
+        definition: s.definition,
+        name: s.name,
+      });
     }, 1500);
 
   if (segmentId === undefined || !isInternalSegment) {
@@ -121,6 +110,14 @@ function BroadcastSegmentEditor({
       disabled={disabled}
       segmentId={segmentId}
       onSegmentChange={updateSegmentCallback}
+      allowedNodeTypes={[
+        SegmentNodeType.Performed,
+        SegmentNodeType.Trait,
+        SegmentNodeType.Everyone,
+        SegmentNodeType.And,
+        SegmentNodeType.Or,
+      ]}
+      inputWidth={320}
     />
   );
 }
@@ -129,9 +126,47 @@ export default function Recipients({ state }: { state: BroadcastState }) {
   const { workspace } = useAppStorePick(["workspace"]);
   const broadcastQuery = useBroadcastQuery(state.id);
   const broadcastMutation = useBroadcastMutation(state.id);
+  const authHeaders = useAuthHeaders();
+  const baseApiUrl = useBaseApiUrl();
+  const [warehousePreview, setWarehousePreview] = useState<{
+    users: number;
+    durationMs: number;
+  } | null>(null);
+  const [warehousePreviewError, setWarehousePreviewError] = useState<
+    string | null
+  >(null);
+  const [warehousePreviewLoading, setWarehousePreviewLoading] = useState(false);
+  const warehouseSourcePersistedForBroadcast = useRef<string | null>(null);
   const [selectExistingSegment, setSelectExistingSegment] = useState<
     "existing" | "new" | null
   >(null);
+
+  useEffect(() => {
+    const broadcast = broadcastQuery.data;
+    if (
+      !broadcast ||
+      broadcast.status !== "Draft" ||
+      broadcast.config.audienceSource === "StageWarehouse" ||
+      warehouseSourcePersistedForBroadcast.current === broadcast.id
+    ) {
+      return;
+    }
+    warehouseSourcePersistedForBroadcast.current = broadcast.id;
+    broadcastMutation.mutate(
+      {
+        config: {
+          ...broadcast.config,
+          audienceSource: "StageWarehouse",
+          warehouseAudienceRunId: undefined,
+        },
+      },
+      {
+        onError: () => {
+          warehouseSourcePersistedForBroadcast.current = null;
+        },
+      },
+    );
+  }, [broadcastMutation, broadcastQuery.data]);
 
   useEffect(() => {
     if (
@@ -191,6 +226,31 @@ export default function Recipients({ state }: { state: BroadcastState }) {
 
   const currentSegmentId = broadcast.segmentId ?? undefined;
   const currentSubscriptionGroupId = broadcast.subscriptionGroupId ?? undefined;
+  const previewWarehouseAudience = async () => {
+    if (workspace.type !== CompletionStatus.Successful) return;
+    setWarehousePreviewLoading(true);
+    setWarehousePreview(null);
+    setWarehousePreviewError(null);
+    try {
+      const response = await axios.post<{ users: number; durationMs: number }>(
+        `${baseApiUrl}/broadcasts/warehouse-preview`,
+        {
+          workspaceId: workspace.value.id,
+          broadcastId: state.id,
+        },
+        { headers: authHeaders },
+      );
+      setWarehousePreview(response.data);
+    } catch (error) {
+      setWarehousePreviewError(
+        axios.isAxiosError<{ message?: string }>(error)
+          ? error.response?.data.message ?? error.message
+          : "Audience preview failed",
+      );
+    } finally {
+      setWarehousePreviewLoading(false);
+    }
+  };
 
   let subscriptionGroupSelect: React.ReactNode = null;
   if (channel) {
@@ -235,6 +295,35 @@ export default function Recipients({ state }: { state: BroadcastState }) {
   }
   return (
     <Stack spacing={2}>
+      <Typography variant="caption" sx={{ mb: -1 }}>
+        Audience Data Source
+      </Typography>
+      <Typography variant="h6">Stage Warehouse</Typography>
+      <Stack spacing={1} sx={{ maxWidth: 760, alignItems: "flex-start" }}>
+        <Typography variant="body2">
+          Segment rules query Stage ClickHouse when the campaign starts. Only
+          matching user IDs are kept temporarily in Dittofeed; current profile
+          and device data is fetched in each send batch.
+        </Typography>
+        <Button
+          variant="outlined"
+          disabled={!currentSegmentId || warehousePreviewLoading}
+          onClick={() => void previewWarehouseAudience()}
+        >
+          {warehousePreviewLoading
+            ? "Querying Stage Warehouse…"
+            : "Preview Warehouse Audience"}
+        </Button>
+        {warehousePreview ? (
+          <Alert severity="success">
+            {warehousePreview.users.toLocaleString()} matching users found in{" "}
+            {(warehousePreview.durationMs / 1000).toFixed(2)} seconds.
+          </Alert>
+        ) : null}
+        {warehousePreviewError ? (
+          <Alert severity="error">{warehousePreviewError}</Alert>
+        ) : null}
+      </Stack>
       <Typography variant="caption" sx={{ mb: -1 }}>
         Subscription Group (Required)
       </Typography>

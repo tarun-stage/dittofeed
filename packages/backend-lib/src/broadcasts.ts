@@ -526,6 +526,12 @@ export async function upsertBroadcastV2({
       }
       let broadcast: Broadcast;
       if (existing) {
+        const requiresDraft =
+          segmentId !== undefined ||
+          messageTemplateId !== undefined ||
+          subscriptionGroupId !== undefined ||
+          config !== undefined ||
+          scheduledAt !== undefined;
         const updateResult = await queryResult(
           tx
             .update(dbBroadcast)
@@ -541,6 +547,7 @@ export async function upsertBroadcastV2({
               and(
                 eq(dbBroadcast.id, existing.id),
                 eq(dbBroadcast.workspaceId, workspaceId),
+                requiresDraft ? eq(dbBroadcast.statusV2, "Draft") : undefined,
               ),
             )
             .returning(),
@@ -572,14 +579,11 @@ export async function upsertBroadcastV2({
         }
         const updatedBroadcast = updateResult.value[0];
         if (!updatedBroadcast) {
-          logger().error(
-            {
-              broadcastId: existing.id,
-              workspaceId,
-            },
-            "Broadcast not found",
-          );
-          throw new Error("Broadcast not found");
+          return err({
+            type: UpsertBroadcastV2ErrorTypeEnum.ConstraintViolation,
+            message:
+              "Campaign delivery settings can only be edited in Draft status",
+          });
         }
         broadcast = updatedBroadcast;
       } else {
@@ -591,13 +595,6 @@ export async function upsertBroadcastV2({
         }
         const channel: ChannelType =
           Array.from(channels)[0] ?? ChannelType.Email;
-
-        if (channel === ChannelType.MobilePush) {
-          return err({
-            type: UpsertBroadcastV2ErrorTypeEnum.ConstraintViolation,
-            message: "Mobile push is not supported yet",
-          });
-        }
 
         let messageConfig: BroadcastV2Config["message"];
         switch (channel) {
@@ -612,6 +609,11 @@ export async function upsertBroadcastV2({
             };
             break;
           case ChannelType.Webhook:
+            messageConfig = {
+              type: channel,
+            };
+            break;
+          case ChannelType.MobilePush:
             messageConfig = {
               type: channel,
             };

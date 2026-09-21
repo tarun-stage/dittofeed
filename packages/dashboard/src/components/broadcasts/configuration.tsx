@@ -32,6 +32,7 @@ import {
   ChannelType,
   EmailProviderType,
   EmailProviderTypeSchema,
+  MobilePushProviderType,
   SmsProviderType,
 } from "isomorphic-lib/src/types";
 import { useCallback, useMemo, useState } from "react";
@@ -97,8 +98,17 @@ function getTomorrowAt8AM(currentDate: Date = new Date()): string {
 }
 
 interface ProviderOverrideOption {
-  id: EmailProviderTypeSchema | SmsProviderType;
+  id: EmailProviderTypeSchema | SmsProviderType | MobilePushProviderType;
   label: string;
+}
+
+function isMobilePushProviderType(
+  value: ProviderOverrideOption["id"],
+): value is MobilePushProviderType {
+  return (
+    value === MobilePushProviderType.Firebase ||
+    value === MobilePushProviderType.Test
+  );
 }
 
 // TODO provide state configuration to disable or hardcode email providers
@@ -152,6 +162,11 @@ export default function Configuration({
         ];
       case ChannelType.Webhook:
         return [];
+      case ChannelType.MobilePush:
+        return [
+          { id: MobilePushProviderType.Firebase, label: "Firebase" },
+          { id: MobilePushProviderType.Test, label: "Test" },
+        ];
       default:
         assertUnreachable(channel);
     }
@@ -162,7 +177,11 @@ export default function Configuration({
       return null;
     }
     const { message } = broadcast.config;
-    let override: EmailProviderTypeSchema | SmsProviderType | null = null;
+    let override:
+      | EmailProviderTypeSchema
+      | SmsProviderType
+      | MobilePushProviderType
+      | null = null;
     switch (message.type) {
       case ChannelType.Email:
         override = message.providerOverride ?? null;
@@ -172,6 +191,9 @@ export default function Configuration({
         break;
       case ChannelType.Webhook:
         return null;
+      case ChannelType.MobilePush:
+        override = message.providerOverride ?? null;
+        break;
       default:
         assertUnreachable(message);
     }
@@ -494,6 +516,17 @@ export default function Configuration({
                   providerOverride: newProviderOverride ?? null,
                 };
                 newMessage = newSmsMessage;
+                break;
+              }
+              case ChannelType.MobilePush: {
+                const newProviderOverride =
+                  newValue && isMobilePushProviderType(newValue.id)
+                    ? newValue.id
+                    : undefined;
+                newMessage = {
+                  ...message,
+                  providerOverride: newProviderOverride,
+                };
                 break;
               }
               default:

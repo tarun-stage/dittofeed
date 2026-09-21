@@ -49,7 +49,13 @@ export default function SegmentUsers() {
         }}
       >
         <Stack direction="row">
-          <Typography variant="h4">Users</Typography>
+          <Stack spacing={0.5}>
+            <Typography variant="h4">Find People</Typography>
+            <Typography variant="body2" color="text.secondary">
+              Search users and inspect their properties, events and message
+              history.
+            </Typography>
+          </Stack>
         </Stack>
         <UsersTableV2
           {...queryParams}

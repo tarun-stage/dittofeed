@@ -27,7 +27,12 @@ export function getDefaultMessageTemplateDefinition(
     case ChannelType.Webhook:
       return DEFAULT_WEBHOOK_DEFINITION;
     case ChannelType.MobilePush:
-      throw new Error("Not implemented");
+      return {
+        type: ChannelType.MobilePush,
+        title: "New notification",
+        body: "Notification body",
+        android: { notification: { channelId: "channel1" } },
+      };
     default:
       assertUnreachable(channelType);
   }

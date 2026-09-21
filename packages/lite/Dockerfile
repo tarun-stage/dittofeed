@@ -53,13 +53,9 @@ ARG WORKSPACE_NAME='Default'
 
 WORKDIR /service
 
-RUN yarn set version 4.1.1
-
 COPY --from=builder /service/production_node_modules ./node_modules
 COPY --from=builder /service/package.json ./package.json
 COPY --from=builder /service/*.json /service/yarn.lock /service/.yarnrc.yml ./
-COPY --from=builder /service/.yarn .yarn
-
 COPY --from=builder /service/packages/lite/dist ./packages/lite/dist
 COPY --from=builder /service/packages/lite/package.json ./packages/lite/package.json
 

@@ -1,4 +1,9 @@
 import { TypeBoxTypeProvider } from "@fastify/type-provider-typebox";
+import config from "backend-lib/src/config";
+import {
+  getStageWarehouseEventCatalog,
+  STAGE_WAREHOUSE_TRAITS,
+} from "backend-lib/src/segments";
 import {
   DownloadEventsRequest,
   GetEventsRequest,
@@ -92,7 +97,14 @@ export default async function eventsController(fastify: FastifyInstance) {
       const traits = await findIdentifyTraits({
         workspaceId: request.query.workspaceId,
       });
-      return reply.status(200).send({ traits });
+      const mergedTraits = config().enableStageWarehouseAudiences
+        ? [...new Set([...traits, ...STAGE_WAREHOUSE_TRAITS])]
+        : traits;
+      return reply.status(200).send({
+        traits: mergedTraits.filter(
+          (trait): trait is string => typeof trait === "string",
+        ),
+      });
     },
   );
 
@@ -109,9 +121,11 @@ export default async function eventsController(fastify: FastifyInstance) {
       },
     },
     async (request, reply) => {
-      const properties = await findTrackProperties({
-        workspaceId: request.query.workspaceId,
-      });
+      const properties = config().enableStageWarehouseAudiences
+        ? await getStageWarehouseEventCatalog()
+        : await findTrackProperties({
+            workspaceId: request.query.workspaceId,
+          });
       return reply.status(200).send({ properties });
     },
   );

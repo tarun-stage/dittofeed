@@ -7,6 +7,7 @@ import * as schema from "backend-lib/src/db/schema";
 import logger from "backend-lib/src/logger";
 import {
   buildSegmentsFile,
+  countStageWarehouseAudience,
   deleteSegment,
   toSegmentResource,
   updateSegmentStatus,
@@ -27,7 +28,6 @@ import {
   SEGMENT_ID_HEADER,
   WORKSPACE_ID_HEADER,
 } from "isomorphic-lib/src/constants";
-import { unwrap } from "isomorphic-lib/src/resultHandling/resultUtils";
 import {
   schemaValidate,
   schemaValidateWithErr,
@@ -62,6 +62,38 @@ import { CsvParseResult } from "../types";
 
 // eslint-disable-next-line @typescript-eslint/require-await
 export default async function segmentsController(fastify: FastifyInstance) {
+  fastify.withTypeProvider<TypeBoxTypeProvider>().post(
+    "/warehouse-preview",
+    {
+      schema: {
+        description: "Count a segment audience in the Stage warehouse.",
+        tags: ["Segments"],
+        body: Type.Object({
+          workspaceId: Type.String(),
+          definition: SegmentDefinition,
+        }),
+        response: {
+          200: Type.Object({ users: Type.Number(), durationMs: Type.Number() }),
+          400: BaseMessageResponse,
+        },
+      },
+    },
+    async (request, reply) => {
+      try {
+        const result = await countStageWarehouseAudience({
+          definition: request.body.definition,
+          now: Date.now(),
+        });
+        return reply.status(200).send(result);
+      } catch (error) {
+        logger().error({ error }, "Stage warehouse segment preview failed");
+        return reply.status(400).send({
+          message: error instanceof Error ? error.message : "Preview failed",
+        });
+      }
+    },
+  );
+
   fastify.withTypeProvider<TypeBoxTypeProvider>().get(
     "/",
     {
@@ -89,7 +121,17 @@ export default async function segmentsController(fastify: FastifyInstance) {
       const segmentModels = await db().query.segment.findMany({
         where: and(...conditions),
       });
-      const segments = segmentModels.map((s) => unwrap(toSegmentResource(s)));
+      const segments = segmentModels.flatMap((segment) => {
+        const result = toSegmentResource(segment);
+        if (result.isErr()) {
+          logger().warn(
+            { segmentId: segment.id, error: result.error },
+            "Skipping invalid segment definition",
+          );
+          return [];
+        }
+        return [result.value];
+      });
       return reply.status(200).send({ segments });
     },
   );

@@ -44,6 +44,7 @@ import EmailEditor from "../../../components/messages/emailEditor";
 import SmsEditor from "../../../components/messages/smsEditor";
 import WebhookEditor from "../../../components/messages/webhookEditor";
 import SubscriptionGroupAutocomplete from "../../../components/subscriptionGroupAutocomplete";
+import { MobilePushEditor } from "../../../components/templateEditor";
 import { addInitialStateToProps } from "../../../lib/addInitialStateToProps";
 import apiRequestHandlerFactory from "../../../lib/apiRequestHandlerFactory";
 import { useAppStorePick } from "../../../lib/appStore";
@@ -345,7 +346,15 @@ const BroadcastTemplateInner: NextPage<BroadcastTemplateProps> =
         );
         break;
       case ChannelType.MobilePush:
-        throw new Error("MobilePush not implemented");
+        templateEditor = (
+          <MobilePushEditor
+            templateId={templateId}
+            hideTitle
+            hidePublisher
+            disabled={disabled}
+          />
+        );
+        break;
       case ChannelType.Webhook:
         templateEditor = (
           <WebhookEditor
@@ -388,7 +397,7 @@ const BroadcastTemplateInner: NextPage<BroadcastTemplateProps> =
           <MenuItem value={ChannelType.Webhook}>
             {CHANNEL_NAMES[ChannelType.Webhook]}
           </MenuItem>
-          <MenuItem disabled value={ChannelType.MobilePush}>
+          <MenuItem value={ChannelType.MobilePush}>
             {CHANNEL_NAMES[ChannelType.MobilePush]}
           </MenuItem>
         </Select>

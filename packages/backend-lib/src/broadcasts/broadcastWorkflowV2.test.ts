@@ -6,14 +6,15 @@ import { randomUUID } from "node:crypto";
 import { TestWorkflowEnvironment } from "@temporalio/testing";
 import { Worker } from "@temporalio/worker";
 import { zonedTimeToUtc } from "date-fns-tz";
+import { eq } from "drizzle-orm";
 import { unwrap } from "isomorphic-lib/src/resultHandling/resultUtils";
 import { err, ok } from "neverthrow";
 import { times } from "remeda";
 
 import { createWorker } from "../../test/temporal";
-import { broadcastV2ToResource } from "../broadcasts";
+import { broadcastV2ToResource, upsertBroadcastV2 } from "../broadcasts";
 import config, { Config } from "../config";
-import { insert } from "../db";
+import { db, insert } from "../db";
 import * as schema from "../db/schema";
 import { searchDeliveries } from "../deliveries";
 import { SendMessageParameters } from "../messaging";
@@ -231,6 +232,38 @@ describe("broadcastWorkflowV2", () => {
     if (workerRunPromise) {
       await workerRunPromise;
     }
+  });
+
+  it("preserves an active campaign's audience snapshot when a stale config update arrives", async () => {
+    const runId = randomUUID();
+    await createBroadcast({
+      config: {
+        type: "V2",
+        message: { type: ChannelType.Email },
+        audienceSource: "StageWarehouse",
+        warehouseAudienceRunId: runId,
+      },
+    });
+    await db()
+      .update(schema.broadcast)
+      .set({ statusV2: "Running" })
+      .where(eq(schema.broadcast.id, broadcast.id));
+
+    const update = await upsertBroadcastV2({
+      id: broadcast.id,
+      workspaceId: workspace.id,
+      config: {
+        type: "V2",
+        message: { type: ChannelType.Email },
+        audienceSource: "StageWarehouse",
+      },
+    });
+
+    expect(update.isErr()).toBe(true);
+    const stored = await db().query.broadcast.findFirst({
+      where: eq(schema.broadcast.id, broadcast.id),
+    });
+    expect(stored?.config).toEqual(broadcast.config);
   });
 
   describe("when sending a broadcast immediately with no rate limit", () => {

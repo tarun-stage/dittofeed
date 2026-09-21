@@ -1,4 +1,5 @@
 import { TypeBoxTypeProvider } from "@fastify/type-provider-typebox";
+import { Type } from "@sinclair/typebox";
 import {
   archiveBroadcast,
   getBroadcastsV2,
@@ -19,6 +20,10 @@ import * as schema from "backend-lib/src/db/schema";
 import { isGmailAuthorized } from "backend-lib/src/gmail";
 import logger from "backend-lib/src/logger";
 import {
+  countStageWarehouseAudience,
+  toSegmentResource,
+} from "backend-lib/src/segments";
+import {
   BaseMessageResponse,
   BroadcastResource,
   BroadcastResourceV2,
@@ -38,11 +43,21 @@ import {
   UpdateBroadcastRequest,
   UpsertBroadcastV2Request,
 } from "backend-lib/src/types";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { FastifyInstance } from "fastify";
 import { v5 as uuidv5 } from "uuid";
 
 import { getOccupantFromRequest } from "../buildApp/requestContext";
+
+const WarehouseAudiencePreviewRequest = Type.Object({
+  workspaceId: Type.String(),
+  broadcastId: Type.String(),
+});
+
+const WarehouseAudiencePreviewResponse = Type.Object({
+  users: Type.Number(),
+  durationMs: Type.Number(),
+});
 
 // eslint-disable-next-line @typescript-eslint/require-await
 export default async function broadcastsController(fastify: FastifyInstance) {
@@ -176,6 +191,57 @@ export default async function broadcastsController(fastify: FastifyInstance) {
       return reply
         .status(204)
         .send({ message: "Broadcast segment recomputed" });
+    },
+  );
+
+  fastify.withTypeProvider<TypeBoxTypeProvider>().post(
+    "/warehouse-preview",
+    {
+      schema: {
+        description: "Count a broadcast audience in the Stage warehouse.",
+        tags: ["Broadcasts"],
+        body: WarehouseAudiencePreviewRequest,
+        response: {
+          200: WarehouseAudiencePreviewResponse,
+          400: BaseMessageResponse,
+          404: BaseMessageResponse,
+        },
+      },
+    },
+    async (request, reply) => {
+      const { workspaceId, broadcastId } = request.body;
+      const broadcast = await db().query.broadcast.findFirst({
+        where: and(
+          eq(schema.broadcast.id, broadcastId),
+          eq(schema.broadcast.workspaceId, workspaceId),
+        ),
+        with: { segment: true },
+      });
+      if (!broadcast) {
+        return reply.status(404).send({ message: "Broadcast not found" });
+      }
+      if (!broadcast.segment) {
+        return reply.status(400).send({ message: "Select a segment first" });
+      }
+      const segmentResult = toSegmentResource(broadcast.segment);
+      if (segmentResult.isErr()) {
+        return reply.status(400).send({ message: "Segment is invalid" });
+      }
+      try {
+        const result = await countStageWarehouseAudience({
+          definition: segmentResult.value.definition,
+          now: Date.now(),
+        });
+        return reply.status(200).send(result);
+      } catch (error) {
+        logger().error(
+          { error, workspaceId, broadcastId },
+          "Stage warehouse audience preview failed",
+        );
+        return reply.status(400).send({
+          message: error instanceof Error ? error.message : "Preview failed",
+        });
+      }
     },
   );
 

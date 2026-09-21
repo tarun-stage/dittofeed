@@ -2,6 +2,7 @@ import { db, insert } from "backend-lib/src/db";
 import * as schema from "backend-lib/src/db/schema";
 import { enrichMessageTemplate } from "backend-lib/src/messaging";
 import {
+  ChannelType,
   CompletionStatus,
   DefaultEmailProviderResource,
   EmailContentsType,
@@ -62,6 +63,64 @@ export async function serveSmsTemplate({
     messages: {
       type: CompletionStatus.Successful,
       value: [unwrap(enrichMessageTemplate(smsTemplateWithDefault))],
+    },
+    userProperties: {
+      type: CompletionStatus.Successful,
+      value: userProperties.flatMap((p) => unwrap(toUserPropertyResource(p))),
+    },
+  };
+}
+
+export async function serveMobilePushTemplate({
+  workspaceId,
+  messageTemplateId,
+  defaultName,
+}: {
+  workspaceId: string;
+  messageTemplateId: string;
+  defaultName?: string;
+}): Promise<Pick<AppState, "messages" | "userProperties">> {
+  const [mobilePushTemplate, userProperties] = await Promise.all([
+    db().query.messageTemplate.findFirst({
+      where: and(
+        eq(schema.messageTemplate.id, messageTemplateId),
+        eq(schema.messageTemplate.workspaceId, workspaceId),
+      ),
+    }),
+    db().query.userProperty.findMany({
+      where: eq(schema.userProperty.workspaceId, workspaceId),
+    }),
+  ]);
+
+  let mobilePushTemplateWithDefault: MessageTemplate;
+  if (!mobilePushTemplate) {
+    mobilePushTemplateWithDefault = await insert({
+      table: schema.messageTemplate,
+      values: {
+        workspaceId,
+        name: defaultName ?? `New Push Notification - ${messageTemplateId}`,
+        id: messageTemplateId,
+        definition: {
+          type: ChannelType.MobilePush,
+          title: "New notification",
+          body: "Notification body",
+          android: { notification: { channelId: "channel1" } },
+        },
+      },
+      lookupExisting: and(
+        eq(schema.messageTemplate.id, messageTemplateId),
+        eq(schema.messageTemplate.workspaceId, workspaceId),
+      )!,
+      doNothingOnConflict: true,
+    }).then(unwrap);
+  } else {
+    mobilePushTemplateWithDefault = mobilePushTemplate;
+  }
+
+  return {
+    messages: {
+      type: CompletionStatus.Successful,
+      value: [unwrap(enrichMessageTemplate(mobilePushTemplateWithDefault))],
     },
     userProperties: {
       type: CompletionStatus.Successful,

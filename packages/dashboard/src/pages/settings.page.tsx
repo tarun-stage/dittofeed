@@ -1334,6 +1334,9 @@ function DefaultSmsConfig() {
       case SmsProviderType.SignalWire:
         name = "SignalWire";
         break;
+      case SmsProviderType.Celetel:
+        name = "Celetel";
+        break;
       case SmsProviderType.Test:
         name = "Test";
         break;
@@ -1588,6 +1591,108 @@ function SignalWireConfig() {
   );
 }
 
+function CeletelSmsConfig() {
+  const secretAvailability = useSecretAvailability();
+  return (
+    <Fields
+      sections={[
+        {
+          id: "celetel-sms-section",
+          fieldGroups: [
+            {
+              id: "celetel-sms-fields",
+              name: "Celetel SMS",
+              fields: [
+                {
+                  id: "celetel-sms-endpoint",
+                  type: "secret",
+                  fieldProps: {
+                    name: SecretNames.Celetel,
+                    secretKey: "endpoint",
+                    label: "Endpoint",
+                    helperText:
+                      "Celetel SMS API endpoint. Defaults to https://api.celetel.com/api/v1/send.",
+                    type: SmsProviderType.Celetel,
+                    saved: isSecretSaved(
+                      SecretNames.Celetel,
+                      "endpoint",
+                      secretAvailability,
+                    ),
+                  },
+                },
+                {
+                  id: "celetel-sms-username",
+                  type: "secret",
+                  fieldProps: {
+                    name: SecretNames.Celetel,
+                    secretKey: "username",
+                    label: "Username",
+                    helperText: "Celetel account username.",
+                    type: SmsProviderType.Celetel,
+                    saved: isSecretSaved(
+                      SecretNames.Celetel,
+                      "username",
+                      secretAvailability,
+                    ),
+                  },
+                },
+                {
+                  id: "celetel-sms-password",
+                  type: "secret",
+                  fieldProps: {
+                    name: SecretNames.Celetel,
+                    secretKey: "password",
+                    label: "Password",
+                    helperText: "Celetel account password.",
+                    type: SmsProviderType.Celetel,
+                    saved: isSecretSaved(
+                      SecretNames.Celetel,
+                      "password",
+                      secretAvailability,
+                    ),
+                  },
+                },
+                {
+                  id: "celetel-sms-sender-id",
+                  type: "secret",
+                  fieldProps: {
+                    name: SecretNames.Celetel,
+                    secretKey: "senderId",
+                    label: "Sender ID",
+                    helperText: "Registered six-character DLT sender header.",
+                    type: SmsProviderType.Celetel,
+                    saved: isSecretSaved(
+                      SecretNames.Celetel,
+                      "senderId",
+                      secretAvailability,
+                    ),
+                  },
+                },
+                {
+                  id: "celetel-sms-dlt-pe-id",
+                  type: "secret",
+                  fieldProps: {
+                    name: SecretNames.Celetel,
+                    secretKey: "dltPrincipalEntityId",
+                    label: "DLT Principal Entity ID",
+                    helperText: "Stage principal entity ID registered on DLT.",
+                    type: SmsProviderType.Celetel,
+                    saved: isSecretSaved(
+                      SecretNames.Celetel,
+                      "dltPrincipalEntityId",
+                      secretAvailability,
+                    ),
+                  },
+                },
+              ],
+            },
+          ],
+        },
+      ]}
+    />
+  );
+}
+
 function SmsChannelConfig() {
   return (
     <>
@@ -1595,6 +1700,7 @@ function SmsChannelConfig() {
       <DefaultSmsConfig />
       <Twilios />
       <SignalWireConfig />
+      <CeletelSmsConfig />
     </>
   );
 }

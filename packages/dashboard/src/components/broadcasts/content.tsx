@@ -1,4 +1,16 @@
-import { Box, Stack, ToggleButton, ToggleButtonGroup } from "@mui/material";
+import RefreshIcon from "@mui/icons-material/Refresh";
+import {
+  Box,
+  Button,
+  CircularProgress,
+  Stack,
+  TextField,
+  ToggleButton,
+  ToggleButtonGroup,
+  Typography,
+} from "@mui/material";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
+import axios from "axios";
 import {
   getBroadcastMessageTemplateId,
   getBroadcastMessageTemplateName,
@@ -11,9 +23,11 @@ import {
   EmailContentsType,
   LowCodeEmailDefaultType,
 } from "isomorphic-lib/src/types";
+import { useSnackbar } from "notistack";
 import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { useAppStorePick } from "../../lib/appStore";
+import { useAuthHeaders, useBaseApiUrl } from "../../lib/authModeProvider";
 import { getDefaultMessageTemplateDefinition } from "../../lib/defaultTemplateDefinition";
 import { ResourceType } from "../../lib/types";
 import { useBroadcastMutation } from "../../lib/useBroadcastMutation";
@@ -24,7 +38,61 @@ import EmailEditor from "../messages/emailEditor";
 import SmsEditor from "../messages/smsEditor";
 import WebhookEditor from "../messages/webhookEditor";
 import ResourceSelect from "../resourceSelect";
+import { MobilePushEditor } from "../templateEditor";
 import { BroadcastState } from "./broadcastsShared";
+
+interface WhatsAppTemplatePreview {
+  templateName: string;
+  languageCode: string;
+  message: string;
+}
+
+interface RefreshCeletelTemplatesResponse {
+  fetched: number;
+  imported: number;
+  updated: number;
+  skipped: number;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
+function getWhatsAppTemplatePreview(
+  body: string,
+): WhatsAppTemplatePreview | null {
+  try {
+    const parsed: unknown = JSON.parse(body);
+    if (!isRecord(parsed) || !isRecord(parsed.config)) return null;
+    const { data } = parsed.config;
+    if (!isRecord(data)) return null;
+    const legacyTemplate = isRecord(data.template) ? data.template : null;
+    const templateName = legacyTemplate?.namespace ?? data.templateName;
+    const languageCode = legacyTemplate?.languageCode ?? data.languageCode;
+    if (typeof templateName !== "string" || typeof languageCode !== "string") {
+      return null;
+    }
+
+    const bodyComponent = Array.isArray(data.components)
+      ? data.components.find(
+          (component) =>
+            isRecord(component) &&
+            component.type === "body" &&
+            isRecord(component.body),
+        )
+      : undefined;
+    const message =
+      isRecord(bodyComponent) &&
+      isRecord(bodyComponent.body) &&
+      typeof bodyComponent.body.text === "string"
+        ? bodyComponent.body.text
+        : "Template content is managed in Celetel.";
+
+    return { templateName, languageCode, message };
+  } catch {
+    return null;
+  }
+}
 
 function EmailControls({
   emailContentType,
@@ -112,9 +180,73 @@ function ExistingTemplatePreview({ broadcastId }: { broadcastId: string }) {
           hideEditor
         />
       );
-    case ChannelType.Webhook:
+    case ChannelType.Webhook: {
+      const whatsAppPreview = getWhatsAppTemplatePreview(
+        messageTemplate.definition.body,
+      );
+      if (whatsAppPreview) {
+        return (
+          <Stack
+            spacing={2}
+            sx={{
+              maxWidth: 900,
+              border: 1,
+              borderColor: "divider",
+              borderRadius: 1,
+              p: 2,
+            }}
+          >
+            <Box>
+              <Typography variant="subtitle1">WhatsApp message</Typography>
+              <Typography variant="body2" color="text.secondary">
+                Approved Celetel template selected for this campaign.
+              </Typography>
+            </Box>
+            <Stack direction={{ xs: "column", md: "row" }} spacing={2}>
+              <TextField
+                fullWidth
+                label="Template"
+                value={whatsAppPreview.templateName}
+                InputProps={{ readOnly: true }}
+              />
+              <TextField
+                fullWidth
+                label="Language"
+                value={whatsAppPreview.languageCode}
+                InputProps={{ readOnly: true }}
+              />
+              <TextField
+                fullWidth
+                label="Recipient property"
+                value={messageTemplate.definition.identifierKey}
+                InputProps={{ readOnly: true }}
+              />
+            </Stack>
+            <TextField
+              fullWidth
+              multiline
+              minRows={3}
+              label="Message preview"
+              value={whatsAppPreview.message}
+              InputProps={{ readOnly: true }}
+            />
+          </Stack>
+        );
+      }
       return (
         <WebhookEditor
+          templateId={messageTemplateId}
+          disabled
+          hidePublisher
+          hideTitle
+          hideUserPropertiesPanel
+          hideEditor
+        />
+      );
+    }
+    case ChannelType.MobilePush:
+      return (
+        <MobilePushEditor
           templateId={messageTemplateId}
           disabled
           hidePublisher
@@ -248,6 +380,17 @@ function BroadcastMessageTemplateEditor({
         />
       );
       break;
+    case ChannelType.MobilePush:
+      editor = (
+        <MobilePushEditor
+          templateId={messageTemplateId}
+          disabled={disabled}
+          hidePublisher
+          hideTitle
+          hideUserPropertiesPanel={hideTemplateUserPropertiesPanel}
+        />
+      );
+      break;
     default:
       return null;
   }
@@ -256,6 +399,10 @@ function BroadcastMessageTemplateEditor({
 
 export default function Content({ state }: { state: BroadcastState }) {
   const { workspace } = useAppStorePick(["workspace"]);
+  const queryClient = useQueryClient();
+  const { enqueueSnackbar } = useSnackbar();
+  const baseApiUrl = useBaseApiUrl();
+  const authHeaders = useAuthHeaders();
   const { data: broadcast } = useBroadcastQuery(state.id);
   const broadcastMutation = useBroadcastMutation(state.id);
   const [selectExistingTemplate, setSelectExistingTemplate] = useState<
@@ -267,6 +414,36 @@ export default function Content({ state }: { state: BroadcastState }) {
   const { data: messageTemplate } = useMessageTemplateQuery(
     broadcast?.messageTemplateId,
   );
+  const refreshCeletelTemplates = useMutation({
+    mutationFn: async () => {
+      if (workspace.type !== CompletionStatus.Successful) {
+        throw new Error("Workspace is unavailable");
+      }
+      return axios.post<RefreshCeletelTemplatesResponse>(
+        `${baseApiUrl}/content/templates/celetel/refresh`,
+        { workspaceId: workspace.value.id },
+        { headers: authHeaders },
+      );
+    },
+    onSuccess: async ({ data }) => {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["resources"] }),
+        queryClient.invalidateQueries({ queryKey: ["messageTemplates"] }),
+      ]);
+      enqueueSnackbar(
+        `Celetel refreshed: ${data.imported} added, ${data.updated} updated`,
+        { variant: "success" },
+      );
+    },
+    onError: (error) => {
+      const message = axios.isAxiosError<{ message?: string }>(error)
+        ? error.response?.data.message
+        : undefined;
+      enqueueSnackbar(message ?? "Celetel templates could not be refreshed", {
+        variant: "error",
+      });
+    },
+  });
 
   useEffect(() => {
     if (
@@ -370,6 +547,7 @@ export default function Content({ state }: { state: BroadcastState }) {
   if (!broadcast) {
     return null;
   }
+  const isWhatsApp = broadcast.config.message.type === ChannelType.Webhook;
   let controls: React.ReactNode;
   if (selectExistingTemplate === "new" && broadcast.messageTemplateId) {
     switch (broadcast.config.message.type) {
@@ -399,22 +577,45 @@ export default function Content({ state }: { state: BroadcastState }) {
       sx={{ height: "100%", width: "100%", flex: 1, minHeight: 0 }}
     >
       <Stack direction="row" spacing={2}>
-        <ToggleButtonGroup
-          value={selectExistingTemplate}
-          exclusive
-          disabled={disabled || selectExistingTemplate === null}
-          onChange={(_, newValue) => {
-            if (newValue !== null) {
-              setSelectExistingTemplate(newValue);
-            }
-            if (newValue === "existing") {
-              broadcastMutation.mutate({ messageTemplateId: null });
-            }
-          }}
-        >
-          <ToggleButton value="existing">Existing Template</ToggleButton>
-          <ToggleButton value="new">New Template</ToggleButton>
-        </ToggleButtonGroup>
+        {isWhatsApp ? (
+          <Stack direction="row" spacing={1} alignItems="center">
+            <Typography variant="subtitle1">
+              Approved WhatsApp Template
+            </Typography>
+            <Button
+              size="small"
+              variant="outlined"
+              startIcon={
+                refreshCeletelTemplates.isPending ? (
+                  <CircularProgress size={16} />
+                ) : (
+                  <RefreshIcon />
+                )
+              }
+              disabled={disabled || refreshCeletelTemplates.isPending}
+              onClick={() => refreshCeletelTemplates.mutate()}
+            >
+              Refresh from Celetel
+            </Button>
+          </Stack>
+        ) : (
+          <ToggleButtonGroup
+            value={selectExistingTemplate}
+            exclusive
+            disabled={disabled || selectExistingTemplate === null}
+            onChange={(_, newValue) => {
+              if (newValue !== null) {
+                setSelectExistingTemplate(newValue);
+              }
+              if (newValue === "existing") {
+                broadcastMutation.mutate({ messageTemplateId: null });
+              }
+            }}
+          >
+            <ToggleButton value="existing">Existing Template</ToggleButton>
+            <ToggleButton value="new">New Template</ToggleButton>
+          </ToggleButtonGroup>
+        )}
         {controls}
       </Stack>
       {templateSelect}

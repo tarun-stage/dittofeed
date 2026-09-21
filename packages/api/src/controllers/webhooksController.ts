@@ -2,7 +2,12 @@ import formbody from "@fastify/formbody";
 import { TypeBoxTypeProvider } from "@fastify/type-provider-typebox";
 import { SpanStatusCode } from "@opentelemetry/api";
 import { Type } from "@sinclair/typebox";
+import { submitBatch } from "backend-lib/src/apps/batch";
 import { canWorkspaceReceiveEvents } from "backend-lib/src/auth";
+import {
+  clickhouseClient,
+  ClickHouseQueryBuilder,
+} from "backend-lib/src/clickhouse";
 import backendConfig from "backend-lib/src/config";
 import { generateDigest } from "backend-lib/src/crypto";
 import { db } from "backend-lib/src/db";
@@ -22,6 +27,9 @@ import { withSpan } from "backend-lib/src/openTelemetry";
 import {
   AmazonSNSEvent,
   AmazonSNSEventTypes,
+  BatchTrackData,
+  EventType,
+  InternalEventType,
   MailChimpEvent,
   PostMarkEvent,
   ResendEvent,
@@ -29,11 +37,15 @@ import {
   TwilioEventSms,
 } from "backend-lib/src/types";
 import { insertUserEvents } from "backend-lib/src/userEvents";
-import { createHmac } from "crypto";
+import { createHmac, timingSafeEqual } from "crypto";
 import { and, eq } from "drizzle-orm";
 import { FastifyInstance } from "fastify";
 import { fastifyRawBody } from "fastify-raw-body";
-import { SecretNames, WORKSPACE_ID_HEADER } from "isomorphic-lib/src/constants";
+import {
+  SecretNames,
+  SourceType,
+  WORKSPACE_ID_HEADER,
+} from "isomorphic-lib/src/constants";
 import {
   jsonParseSafe,
   schemaValidateWithErr,
@@ -54,6 +66,142 @@ import { getWorkspaceId } from "../workspace";
 
 const TWILIO_CONFIG_ERR_MSG = "Twilio configuration not found";
 
+const CeletelDlrStatus = Type.Union([Type.String(), Type.Number()]);
+
+const CeletelDlr = Type.Object(
+  {
+    payloadVersion: Type.Optional(Type.String()),
+    statuses: Type.Array(
+      Type.Object(
+        {
+          msgId: Type.String(),
+          status: CeletelDlrStatus,
+          timestamp: Type.Optional(CeletelDlrStatus),
+          url: Type.Optional(Type.String()),
+          shortUrl: Type.Optional(Type.String()),
+          userAgent: Type.Optional(Type.String()),
+          error: Type.Optional(
+            Type.Object(
+              {
+                code: Type.Optional(CeletelDlrStatus),
+                title: Type.Optional(Type.String()),
+              },
+              { additionalProperties: true },
+            ),
+          ),
+        },
+        { additionalProperties: true },
+      ),
+    ),
+  },
+  { additionalProperties: true },
+);
+
+const CeletelWebhookSecret = Type.Object(
+  { celetelWebhookKey: Type.String() },
+  { additionalProperties: true },
+);
+
+const MobilePushReceipt = Type.Object({
+  event: Type.Union([Type.Literal("delivered"), Type.Literal("clicked")]),
+  messageId: Type.String({ minLength: 1, maxLength: 200 }),
+  userId: Type.String({ maxLength: 200 }),
+  receiptToken: Type.String({ minLength: 1, maxLength: 200 }),
+  timestamp: Type.Optional(Type.String({ maxLength: 50 })),
+  deeplink: Type.Optional(Type.String({ maxLength: 2000 })),
+  templateId: Type.Optional(Type.String({ maxLength: 200 })),
+  broadcastId: Type.Optional(Type.String({ maxLength: 200 })),
+  journeyId: Type.Optional(Type.String({ maxLength: 200 })),
+  source: Type.Optional(Type.String({ maxLength: 100 })),
+});
+
+const LegacyMobilePushReceipt = Type.Object(
+  {
+    msg_id: Type.String({ minLength: 42, maxLength: 300 }),
+    user_id: Type.Optional(Type.String({ maxLength: 200 })),
+    deeplink: Type.Optional(Type.String({ maxLength: 2000 })),
+    source: Type.Optional(Type.String({ maxLength: 100 })),
+  },
+  { additionalProperties: true },
+);
+
+interface CeletelMessageContext {
+  message_id: string;
+  user_id: string;
+  anonymous_id: string;
+  properties: string;
+  template_id: string;
+  broadcast_id: string;
+  journey_id: string;
+}
+
+function celetelStatusEvent(status: string): InternalEventType | null {
+  switch (status.toLowerCase()) {
+    case "processed":
+      return InternalEventType.WebhookProcessed;
+    case "sent":
+      return InternalEventType.WebhookSent;
+    case "delivered":
+      return InternalEventType.WebhookDelivered;
+    case "read":
+      return InternalEventType.WebhookRead;
+    case "clicked":
+      return InternalEventType.WebhookClicked;
+    case "failed":
+      return InternalEventType.WebhookFailed;
+    default:
+      return null;
+  }
+}
+
+async function findCeletelMessageContexts({
+  workspaceId,
+  messageIds,
+}: {
+  workspaceId: string;
+  messageIds: string[];
+}): Promise<Map<string, CeletelMessageContext>> {
+  const qb = new ClickHouseQueryBuilder();
+  const result = await clickhouseClient().query({
+    query: `
+      SELECT
+        message_id,
+        user_id,
+        anonymous_id,
+        properties,
+        template_id,
+        broadcast_id,
+        journey_id
+      FROM internal_events
+      WHERE
+        workspace_id = ${qb.addQueryValue(workspaceId, "String")}
+        AND message_id IN ${qb.addQueryValue(messageIds, "Array(String)")}
+        AND event = '${InternalEventType.MessageSent}'
+        AND channel_type = 'Webhook'
+      ORDER BY processing_time DESC
+    `,
+    query_params: qb.getQueries(),
+    format: "JSONEachRow",
+  });
+  const rows = await result.json<CeletelMessageContext>();
+  return new Map(rows.map((row) => [row.message_id, row]));
+}
+
+function validCeletelWebhookKey({
+  expected,
+  received,
+}: {
+  expected: string;
+  received: string;
+}): boolean {
+  const expectedBuffer = new TextEncoder().encode(expected);
+  const receivedBuffer = new TextEncoder().encode(received);
+  return (
+    expectedBuffer.length === receivedBuffer.length &&
+    timingSafeEqual(expectedBuffer, receivedBuffer)
+  );
+}
+
 // eslint-disable-next-line @typescript-eslint/require-await
 export default async function webhookController(fastify: FastifyInstance) {
   await fastify.register(formbody);
@@ -72,6 +220,325 @@ export default async function webhookController(fastify: FastifyInstance) {
     );
     return payload;
   });
+
+  fastify.withTypeProvider<TypeBoxTypeProvider>().post(
+    "/mobile-push",
+    {
+      schema: {
+        description:
+          "Records signed mobile push delivered and clicked receipts.",
+        tags: ["Webhooks"],
+        querystring: Type.Object({
+          workspaceId: WorkspaceId,
+        }),
+        body: MobilePushReceipt,
+      },
+    },
+    async (request, reply) => {
+      const { workspaceId } = request.query;
+      const secret = await db().query.secret.findFirst({
+        where: and(
+          eq(schema.secret.workspaceId, workspaceId),
+          eq(schema.secret.name, SecretNames.Fcm),
+        ),
+        with: {
+          workspace: true,
+        },
+      });
+      const key =
+        secret?.value ??
+        (secret?.configValue ? JSON.stringify(secret.configValue) : null);
+      if (
+        !key ||
+        !secret?.workspace ||
+        !canWorkspaceReceiveEvents({ workspace: secret.workspace })
+      ) {
+        return reply.status(401).send({ message: "Workspace not eligible." });
+      }
+
+      const expectedToken = generateDigest({
+        rawBody: `${workspaceId}:${request.body.messageId}:${request.body.userId}`,
+        sharedSecret: key,
+      });
+      if (
+        !validCeletelWebhookKey({
+          expected: expectedToken,
+          received: request.body.receiptToken,
+        })
+      ) {
+        return reply.status(401).send({ message: "Invalid receipt token." });
+      }
+
+      const event =
+        request.body.event === "delivered"
+          ? InternalEventType.MobilePushDelivered
+          : InternalEventType.MobilePushClicked;
+      const properties = {
+        workspaceId,
+        messageId: request.body.messageId,
+        templateId: request.body.templateId,
+        broadcastId: request.body.broadcastId,
+        journeyId: request.body.journeyId,
+        provider: "firebase",
+        source: request.body.source ?? `dittofeed_push_${request.body.event}`,
+        deeplink: request.body.deeplink,
+      };
+      const timestampValue = request.body.timestamp
+        ? new Date(request.body.timestamp)
+        : new Date();
+      await submitBatch({
+        workspaceId,
+        data: {
+          context: {
+            source: SourceType.Webhook,
+            provider: "firebase",
+          },
+          batch: [
+            {
+              type: EventType.Track,
+              event,
+              messageId: generateDigest({
+                rawBody: `${request.body.messageId}:${request.body.event}`,
+                sharedSecret: workspaceId,
+              }),
+              timestamp: Number.isNaN(timestampValue.getTime())
+                ? new Date().toISOString()
+                : timestampValue.toISOString(),
+              userId: request.body.userId,
+              properties,
+            },
+          ],
+        },
+      });
+      return reply.status(200).send({ processed: 1 });
+    },
+  );
+
+  fastify.withTypeProvider<TypeBoxTypeProvider>().post(
+    "/mobile-push-legacy",
+    {
+      schema: {
+        description:
+          "Records mobile push receipts from Stage app releases that use the Engage payload contract.",
+        tags: ["Webhooks"],
+        querystring: Type.Object({
+          workspaceId: WorkspaceId,
+          event: Type.Union([
+            Type.Literal("delivered"),
+            Type.Literal("clicked"),
+          ]),
+        }),
+        body: LegacyMobilePushReceipt,
+      },
+    },
+    async (request, reply) => {
+      const { workspaceId, event } = request.query;
+      const separatorIndex = request.body.msg_id.lastIndexOf(".");
+      const messageId = request.body.msg_id.slice(0, separatorIndex);
+      const receiptToken = request.body.msg_id.slice(separatorIndex + 1);
+      if (!messageId || !/^[a-f0-9]{40}$/.test(receiptToken)) {
+        return reply.status(401).send({ message: "Invalid receipt token." });
+      }
+
+      const secret = await db().query.secret.findFirst({
+        where: and(
+          eq(schema.secret.workspaceId, workspaceId),
+          eq(schema.secret.name, SecretNames.Fcm),
+        ),
+        with: {
+          workspace: true,
+        },
+      });
+      const key =
+        secret?.value ??
+        (secret?.configValue ? JSON.stringify(secret.configValue) : null);
+      if (
+        !key ||
+        !secret?.workspace ||
+        !canWorkspaceReceiveEvents({ workspace: secret.workspace })
+      ) {
+        return reply.status(401).send({ message: "Workspace not eligible." });
+      }
+
+      const expectedToken = generateDigest({
+        rawBody: `${workspaceId}:${messageId}`,
+        sharedSecret: key,
+      });
+      if (
+        !validCeletelWebhookKey({
+          expected: expectedToken,
+          received: receiptToken,
+        })
+      ) {
+        return reply.status(401).send({ message: "Invalid receipt token." });
+      }
+
+      const receiptEvents =
+        event === "clicked"
+          ? [
+              InternalEventType.MobilePushClicked,
+              InternalEventType.MobilePushDelivered,
+            ]
+          : [InternalEventType.MobilePushDelivered];
+      await submitBatch({
+        workspaceId,
+        data: {
+          context: {
+            source: SourceType.Webhook,
+            provider: "firebase",
+          },
+          batch: receiptEvents.map((receiptEvent) => ({
+            type: EventType.Track,
+            event: receiptEvent,
+            messageId: generateDigest({
+              rawBody: `${messageId}:${receiptEvent}`,
+              sharedSecret: workspaceId,
+            }),
+            timestamp: new Date().toISOString(),
+            userId: request.body.user_id ?? "",
+            properties: {
+              workspaceId,
+              messageId,
+              provider: "firebase",
+              source: `dittofeed_legacy_push_${event}`,
+              deeplink: request.body.deeplink,
+              campaignId: `c_df_${workspaceId}`,
+            },
+          })),
+        },
+      });
+      return reply.status(200).send({ processed: receiptEvents.length });
+    },
+  );
+
+  fastify.withTypeProvider<TypeBoxTypeProvider>().post(
+    "/celetel",
+    {
+      schema: {
+        description: "Used to consume Celetel WhatsApp delivery callbacks.",
+        tags: ["Webhooks"],
+        headers: Type.Object({
+          "x-celetel-webhook-key": Type.String(),
+        }),
+        querystring: Type.Object({
+          workspaceId: WorkspaceId,
+        }),
+        body: CeletelDlr,
+      },
+    },
+    async (request, reply) => {
+      const { workspaceId } = request.query;
+      const secret = await db().query.secret.findFirst({
+        where: and(
+          eq(schema.secret.workspaceId, workspaceId),
+          eq(schema.secret.name, SecretNames.Webhook),
+        ),
+        with: {
+          workspace: true,
+        },
+      });
+      const webhookSecret = schemaValidateWithErr(
+        secret?.configValue,
+        CeletelWebhookSecret,
+      );
+      if (
+        webhookSecret.isErr() ||
+        !validCeletelWebhookKey({
+          expected: webhookSecret.value.celetelWebhookKey,
+          received: request.headers["x-celetel-webhook-key"],
+        })
+      ) {
+        return reply.status(401).send({ message: "Invalid webhook key." });
+      }
+      if (
+        !secret?.workspace ||
+        !canWorkspaceReceiveEvents({ workspace: secret.workspace })
+      ) {
+        return reply.status(401).send({ message: "Workspace not eligible." });
+      }
+
+      const recognizedStatuses = request.body.statuses.flatMap((status) => {
+        const event = celetelStatusEvent(String(status.status));
+        const messageId = status.msgId.trim();
+        return event && messageId ? [{ event, messageId, status }] : [];
+      });
+      const messageIds = [
+        ...new Set(recognizedStatuses.map((s) => s.messageId)),
+      ];
+      if (messageIds.length === 0) {
+        return reply.status(200).send({ processed: 0 });
+      }
+
+      const contexts = await findCeletelMessageContexts({
+        workspaceId,
+        messageIds,
+      });
+      const batch = recognizedStatuses.flatMap(
+        ({ event, messageId, status }): BatchTrackData[] => {
+          const context = contexts.get(messageId);
+          if (!context) {
+            logger().warn(
+              { workspaceId, messageId },
+              "Celetel callback did not match a Dittofeed webhook delivery.",
+            );
+            return [];
+          }
+          const timestampSeconds = Number(status.timestamp);
+          const timestamp = Number.isFinite(timestampSeconds)
+            ? new Date(timestampSeconds * 1000).toISOString()
+            : new Date().toISOString();
+          const sentProperties = jsonParseSafe(context.properties).unwrapOr({});
+          const properties = {
+            ...(typeof sentProperties === "object" && sentProperties !== null
+              ? sentProperties
+              : {}),
+            workspaceId,
+            messageId,
+            templateId: context.template_id || undefined,
+            broadcastId: context.broadcast_id || undefined,
+            journeyId: context.journey_id || undefined,
+            provider: "celetel",
+            providerStatus: String(status.status).toLowerCase(),
+            errorCode: status.error?.code,
+            errorReason: status.error?.title,
+            url: status.url,
+            shortUrl: status.shortUrl,
+            userAgent: status.userAgent,
+          };
+          const base = {
+            type: EventType.Track,
+            event,
+            messageId: generateDigest({
+              rawBody: `${messageId}:${String(status.status).toLowerCase()}`,
+              sharedSecret: workspaceId,
+            }),
+            timestamp,
+            properties,
+          } as const;
+          if (context.user_id) {
+            return [{ ...base, userId: context.user_id }];
+          }
+          if (context.anonymous_id) {
+            return [{ ...base, anonymousId: context.anonymous_id }];
+          }
+          return [];
+        },
+      );
+      if (batch.length > 0) {
+        await submitBatch({
+          workspaceId,
+          data: {
+            context: {
+              source: SourceType.Webhook,
+              provider: "celetel",
+            },
+            batch,
+          },
+        });
+      }
+      return reply.status(200).send({ processed: batch.length });
+    },
+  );
 
   fastify.withTypeProvider<TypeBoxTypeProvider>().post(
     "/sendgrid",

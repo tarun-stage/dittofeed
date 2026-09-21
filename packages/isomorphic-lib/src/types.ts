@@ -97,6 +97,14 @@ export enum InternalEventType {
   EmailMarkedSpam = "DFEmailMarkedSpam",
   SmsDelivered = "DFSmsDelivered",
   SmsFailed = "DFSmsFailed",
+  MobilePushDelivered = "DFMobilePushDelivered",
+  MobilePushClicked = "DFMobilePushClicked",
+  WebhookProcessed = "DFWebhookProcessed",
+  WebhookSent = "DFWebhookSent",
+  WebhookDelivered = "DFWebhookDelivered",
+  WebhookRead = "DFWebhookRead",
+  WebhookClicked = "DFWebhookClicked",
+  WebhookFailed = "DFWebhookFailed",
   JourneyNodeProcessed = "DFJourneyNodeProcessed",
   ManualSegmentUpdate = "DFManualSegmentUpdate",
   AttachedFiles = "DFAttachedFiles",
@@ -115,6 +123,14 @@ export const StatusEventsList = [
   InternalEventType.EmailMarkedSpam,
   InternalEventType.SmsDelivered,
   InternalEventType.SmsFailed,
+  InternalEventType.MobilePushDelivered,
+  InternalEventType.MobilePushClicked,
+  InternalEventType.WebhookProcessed,
+  InternalEventType.WebhookSent,
+  InternalEventType.WebhookDelivered,
+  InternalEventType.WebhookRead,
+  InternalEventType.WebhookClicked,
+  InternalEventType.WebhookFailed,
 ] as const;
 
 export enum CursorDirectionEnum {
@@ -180,6 +196,7 @@ export type ChannelType = (typeof ChannelType)[keyof typeof ChannelType];
 export enum SmsProviderType {
   Twilio = "Twilio",
   SignalWire = "SignalWire",
+  Celetel = "Celetel",
   Test = "Test",
 }
 
@@ -396,6 +413,7 @@ export enum TimeOperator {
   Within = "Within",
   AfterAbsolute = "AfterAbsolute",
   BeforeAbsolute = "BeforeAbsolute",
+  BetweenAbsolute = "BetweenAbsolute",
 }
 
 export const PerformedSegmentNode = Type.Object({
@@ -407,6 +425,7 @@ export const PerformedSegmentNode = Type.Object({
   timeOperator: Type.Optional(Type.Enum(TimeOperator)),
   withinSeconds: Type.Optional(Type.Number()),
   absoluteTimestamp: Type.Optional(Type.String()),
+  absoluteTimestampEnd: Type.Optional(Type.String()),
   properties: Type.Optional(
     Type.Array(
       Type.Object({
@@ -1123,6 +1142,13 @@ export const SignalWireOverride = Type.Object({
 
 export type SignalWireOverride = Static<typeof SignalWireOverride>;
 
+export const CeletelOverride = Type.Object({
+  providerOverride: Type.Literal(SmsProviderType.Celetel),
+  senderOverride: Type.Optional(Type.Null()),
+});
+
+export type CeletelOverride = Static<typeof CeletelOverride>;
+
 export const TestSmsOverride = Type.Object({
   providerOverride: Type.Literal(SmsProviderType.Test),
   senderOverride: Type.Optional(Type.Null()),
@@ -1134,6 +1160,7 @@ export const SmsProviderOverride = Type.Union([
   NoSmsProviderOverride,
   TwilioOverride,
   SignalWireOverride,
+  CeletelOverride,
   TestSmsOverride,
 ]);
 
@@ -1143,6 +1170,7 @@ export const SmsMessageVariant = Type.Union([
   Type.Composite([BaseSmsMessageVariant, NoSmsProviderOverride]),
   Type.Composite([BaseSmsMessageVariant, TwilioOverride]),
   Type.Composite([BaseSmsMessageVariant, SignalWireOverride]),
+  Type.Composite([BaseSmsMessageVariant, CeletelOverride]),
   Type.Composite([BaseSmsMessageVariant, TestSmsOverride]),
 ]);
 
@@ -1741,6 +1769,7 @@ export const MobilePushTemplateResource = Type.Object(
     title: Type.Optional(Type.String()),
     body: Type.Optional(Type.String()),
     imageUrl: Type.Optional(Type.String()),
+    deeplink: Type.Optional(Type.String()),
     android: Type.Optional(
       Type.Object({
         notification: Type.Object({
@@ -1760,6 +1789,7 @@ export type MobilePushTemplateResource = Static<
 
 const SmsContents = Type.Object({
   body: Type.String(),
+  dltContentTemplateId: Type.Optional(Type.String()),
   identifierKey: Type.Optional(
     Type.String({
       description:
@@ -3942,6 +3972,17 @@ export const SignalWireSecret = Type.Object({
 
 export type SignalWireSecret = Static<typeof SignalWireSecret>;
 
+export const CeletelSecret = Type.Object({
+  type: Type.Literal(SmsProviderType.Celetel),
+  endpoint: Type.Optional(Type.String()),
+  username: Type.Optional(Type.String()),
+  password: Type.Optional(Type.String()),
+  senderId: Type.Optional(Type.String()),
+  dltPrincipalEntityId: Type.Optional(Type.String()),
+});
+
+export type CeletelSecret = Static<typeof CeletelSecret>;
+
 export const TestSmsSecret = Type.Object({
   type: Type.Literal(SmsProviderType.Test),
 });
@@ -3960,6 +4001,7 @@ export const SmsProviderSecret = Type.Union([
   TwilioSecret,
   TestSmsSecret,
   SignalWireSecret,
+  CeletelSecret,
 ]);
 
 export type SmsProviderSecret = Static<typeof SmsProviderSecret>;
@@ -3980,9 +4022,18 @@ export const SignalWireSmsProvider = Type.Object({
 
 export type SignalWireSmsProvider = Static<typeof SignalWireSmsProvider>;
 
+export const CeletelSmsProvider = Type.Object({
+  id: Type.String(),
+  workspaceId: Type.String(),
+  type: Type.Optional(Type.Literal(SmsProviderType.Celetel)),
+});
+
+export type CeletelSmsProvider = Static<typeof CeletelSmsProvider>;
+
 export const PersistedSmsProvider = Type.Union([
   TwilioSmsProvider,
   SignalWireSmsProvider,
+  CeletelSmsProvider,
   TestSmsProvider,
 ]);
 
@@ -4014,6 +4065,14 @@ export const SmsSignalWireSuccess = Type.Object({
 
 export type SmsSignalWireSuccess = Static<typeof SmsSignalWireSuccess>;
 
+export const SmsCeletelSuccess = Type.Object({
+  type: Type.Literal(SmsProviderType.Celetel),
+  status: Type.Number(),
+  messageId: Type.String(),
+});
+
+export type SmsCeletelSuccess = Static<typeof SmsCeletelSuccess>;
+
 export const SmsTestSuccess = Type.Object({
   type: Type.Literal(SmsProviderType.Test),
 });
@@ -4023,6 +4082,7 @@ export type SmsTestSuccess = Static<typeof SmsTestSuccess>;
 export const SmsServiceProviderSuccess = Type.Union([
   SmsTwilioSuccess,
   SmsSignalWireSuccess,
+  SmsCeletelSuccess,
   SmsTestSuccess,
 ]);
 
@@ -4040,6 +4100,41 @@ export const MessageSmsSuccess = Type.Composite([
 ]);
 
 export type MessageSmsSuccess = Static<typeof MessageSmsSuccess>;
+
+export const MobilePushFirebaseSuccess = Type.Object({
+  type: Type.Literal(MobilePushProviderType.Firebase),
+  messageId: Type.String(),
+});
+
+export type MobilePushFirebaseSuccess = Static<
+  typeof MobilePushFirebaseSuccess
+>;
+
+export const MobilePushTestSuccess = Type.Object({
+  type: Type.Literal(MobilePushProviderType.Test),
+});
+
+export type MobilePushTestSuccess = Static<typeof MobilePushTestSuccess>;
+
+export const MobilePushProviderSuccess = Type.Union([
+  MobilePushFirebaseSuccess,
+  MobilePushTestSuccess,
+]);
+
+export type MobilePushProviderSuccess = Static<
+  typeof MobilePushProviderSuccess
+>;
+
+export const MessageMobilePushSuccess = Type.Object({
+  type: Type.Literal(ChannelType.MobilePush),
+  provider: MobilePushProviderSuccess,
+  to: Type.String(),
+  title: Type.Optional(Type.String()),
+  body: Type.Optional(Type.String()),
+  imageUrl: Type.Optional(Type.String()),
+});
+
+export type MessageMobilePushSuccess = Static<typeof MessageMobilePushSuccess>;
 
 export const EmailTestSuccess = Type.Object({
   type: Type.Literal(EmailProviderType.Test),
@@ -4166,6 +4261,7 @@ export type MessageSkipped = Static<typeof MessageSkipped>;
 export const MessageSendSuccessVariant = Type.Union([
   MessageEmailSuccess,
   MessageSmsSuccess,
+  MessageMobilePushSuccess,
   MessageWebhookSuccess,
 ]);
 
@@ -4448,9 +4544,20 @@ export type MessageSignalWireServiceFailure = Static<
   typeof MessageSignalWireServiceFailure
 >;
 
+export const MessageCeletelServiceFailure = Type.Object({
+  type: Type.Literal(SmsProviderType.Celetel),
+  status: Type.Number(),
+  message: Type.Optional(Type.String()),
+});
+
+export type MessageCeletelServiceFailure = Static<
+  typeof MessageCeletelServiceFailure
+>;
+
 export const SmsServiceProviderFailure = Type.Union([
   MessageTwilioServiceFailure,
   MessageSignalWireServiceFailure,
+  MessageCeletelServiceFailure,
 ]);
 
 export type SmsServiceProviderFailure = Static<
@@ -4463,6 +4570,18 @@ export const MessageSmsServiceFailure = Type.Object({
 });
 
 export type MessageSmsServiceFailure = Static<typeof MessageSmsServiceFailure>;
+
+export const MessageMobilePushServiceFailure = Type.Object({
+  type: Type.Literal(ChannelType.MobilePush),
+  provider: Type.Object({
+    type: Type.Enum(MobilePushProviderType),
+    message: Type.String(),
+  }),
+});
+
+export type MessageMobilePushServiceFailure = Static<
+  typeof MessageMobilePushServiceFailure
+>;
 
 export const MessageWebhookServiceFailure = Type.Object({
   type: Type.Literal(ChannelType.Webhook),
@@ -4477,6 +4596,7 @@ export type MessageWebhookServiceFailure = Static<
 export const MessageServiceFailureVariant = Type.Union([
   MessageEmailServiceFailure,
   MessageSmsServiceFailure,
+  MessageMobilePushServiceFailure,
   MessageWebhookServiceFailure,
 ]);
 
@@ -4674,6 +4794,13 @@ export const SearchDeliveriesResponseItem = Type.Union([
     Type.Object({
       status: Type.String(),
       variant: MessageWebhookSuccess,
+    }),
+    BaseDeliveryItem,
+  ]),
+  Type.Composite([
+    Type.Object({
+      status: Type.String(),
+      variant: MessageMobilePushSuccess,
     }),
     BaseDeliveryItem,
   ]),
@@ -5985,14 +6112,24 @@ export const BroadcastSmsMessageVariant = Type.Union([
   Type.Composite([BaseBroadcastSmsMessageVariant, NoSmsProviderOverride]),
   Type.Composite([BaseBroadcastSmsMessageVariant, TwilioOverride]),
   Type.Composite([BaseBroadcastSmsMessageVariant, SignalWireOverride]),
+  Type.Composite([BaseBroadcastSmsMessageVariant, CeletelOverride]),
   Type.Composite([BaseBroadcastSmsMessageVariant, TestSmsOverride]),
 ]);
 
 export type BroadcastSmsMessageVariant = Static<
   typeof BroadcastSmsMessageVariant
 >;
+export const BroadcastAudienceSource = Type.Union([
+  Type.Literal("Dittofeed"),
+  Type.Literal("StageWarehouse"),
+]);
+
+export type BroadcastAudienceSource = Static<typeof BroadcastAudienceSource>;
+
 export const BroadcastV2Config = Type.Object({
   type: Type.Literal(BroadcastConfigTypeEnum.V2),
+  audienceSource: Type.Optional(BroadcastAudienceSource),
+  warehouseAudienceRunId: Type.Optional(Type.String()),
   // messages per second
   rateLimit: Type.Optional(Type.Number()),
   defaultTimezone: Type.Optional(Type.String()),
@@ -6003,6 +6140,7 @@ export const BroadcastV2Config = Type.Object({
     // Defined separately to allow workspace member specific providers.
     BroadcastEmailMessageVariant,
     BroadcastSmsMessageVariant,
+    Type.Omit(MobilePushMessageVariant, ["templateId"]),
     Type.Omit(WebhookMessageVariant, ["templateId"]),
   ]),
 });

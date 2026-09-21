@@ -209,12 +209,47 @@ export function createClickhouseClient(
 }
 
 let CLICKHOUSE_CLIENT: NodeClickHouseClient | null = null;
+let STAGE_WAREHOUSE_CLICKHOUSE_CLIENT: NodeClickHouseClient | null = null;
 
 export function clickhouseClient() {
   if (CLICKHOUSE_CLIENT === null) {
     CLICKHOUSE_CLIENT = createClickhouseClient();
   }
   return CLICKHOUSE_CLIENT;
+}
+
+export function stageWarehouseClickhouseClient() {
+  if (STAGE_WAREHOUSE_CLICKHOUSE_CLIENT !== null) {
+    return STAGE_WAREHOUSE_CLICKHOUSE_CLIENT;
+  }
+  const {
+    enableStageWarehouseAudiences,
+    sourceClickhouseHost,
+    sourceClickhousePassword,
+    sourceClickhousePort,
+    sourceClickhouseSecure,
+    sourceClickhouseUser,
+  } = config();
+  if (
+    !enableStageWarehouseAudiences ||
+    !sourceClickhouseHost ||
+    !sourceClickhouseUser ||
+    !sourceClickhousePassword
+  ) {
+    throw new Error("Stage warehouse audience configuration is incomplete");
+  }
+  const protocol = sourceClickhouseSecure === "false" ? "http" : "https";
+  STAGE_WAREHOUSE_CLICKHOUSE_CLIENT = createClient({
+    url: `${protocol}://${sourceClickhouseHost}:${sourceClickhousePort ?? "443"}`,
+    username: sourceClickhouseUser,
+    password: sourceClickhousePassword,
+    request_timeout: 180000,
+    clickhouse_settings: {
+      date_time_input_format: "best_effort",
+      max_execution_time: 170,
+    },
+  });
+  return STAGE_WAREHOUSE_CLICKHOUSE_CLIENT;
 }
 
 export async function streamClickhouseQuery(
