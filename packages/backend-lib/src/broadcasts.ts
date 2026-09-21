@@ -618,6 +618,11 @@ export async function upsertBroadcastV2({
               type: channel,
             };
             break;
+          case ChannelType.InApp:
+            messageConfig = {
+              type: channel,
+            };
+            break;
           default:
             throw new Error("Unsupported channel type");
         }
