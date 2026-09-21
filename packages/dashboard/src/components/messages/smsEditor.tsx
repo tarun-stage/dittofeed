@@ -71,7 +71,7 @@ function SmsOptions({ draft, setDraft, disabled }: RenderEditorParams) {
           </Stack>
         </DialogTitle>
         <DialogContent>
-          <Stack sx={{ pt: 1 }}>
+          <Stack spacing={2} sx={{ pt: 1 }}>
             <Autocomplete
               value={draft.identifierKey ?? null}
               onChange={(_event, value) => {
@@ -92,6 +92,23 @@ function SmsOptions({ draft, setDraft, disabled }: RenderEditorParams) {
                   helperText="Override the default 'phone' user property for the recipient number"
                 />
               )}
+            />
+            <TextField
+              value={draft.dltContentTemplateId ?? ""}
+              onChange={(event) => {
+                setDraft((defn) => {
+                  if (defn.type !== ChannelType.Sms) {
+                    return defn;
+                  }
+                  return {
+                    ...defn,
+                    dltContentTemplateId: event.target.value || undefined,
+                  };
+                });
+              }}
+              disabled={disabled}
+              label="DLT Content Template ID"
+              helperText="Required when sending through the Celetel provider in India."
             />
           </Stack>
         </DialogContent>

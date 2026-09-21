@@ -1,4 +1,4 @@
-import axios from "axios";
+import axios, { AxiosHeaders, AxiosResponse } from "axios";
 import { randomUUID } from "crypto";
 import { SecretNames } from "isomorphic-lib/src/constants";
 import { unwrap } from "isomorphic-lib/src/resultHandling/resultUtils";
@@ -530,6 +530,94 @@ describe("messaging", () => {
   });
 
   describe("sendSms", () => {
+    it("sends a DLT-compliant request through Celetel", async () => {
+      const [template, subscriptionGroup] = await Promise.all([
+        insert({
+          table: dbMessageTemplate,
+          values: {
+            id: randomUUID(),
+            workspaceId: workspace.id,
+            name: `template-${randomUUID()}`,
+            updatedAt: new Date(),
+            createdAt: new Date(),
+            definition: {
+              type: ChannelType.Sms,
+              body: "Hello from STAGE",
+              dltContentTemplateId: "dlt-template-1",
+            } satisfies SmsTemplateResource,
+          },
+        }).then(unwrap),
+        upsertSubscriptionGroup({
+          workspaceId: workspace.id,
+          name: `group-${randomUUID()}`,
+          type: SubscriptionGroupType.OptOut,
+          channel: ChannelType.Sms,
+        }).then(unwrap),
+        upsertSubscriptionSecret({ workspaceId: workspace.id }),
+        upsertSmsProvider({
+          workspaceId: workspace.id,
+          setDefault: true,
+          config: {
+            type: SmsProviderType.Celetel,
+            endpoint: "https://sms.example.com/send",
+            username: "stage-user",
+            password: "stage-password",
+            senderId: "STAGEN",
+            dltPrincipalEntityId: "dlt-pe-1",
+          },
+        }),
+      ]);
+      const response: AxiosResponse = {
+        data: { status: "success" },
+        status: 200,
+        statusText: "OK",
+        headers: {},
+        config: { headers: new AxiosHeaders() },
+      };
+      mockAxios.get.mockResolvedValueOnce(response);
+
+      const result = await sendSms({
+        workspaceId: workspace.id,
+        templateId: template.id,
+        messageTags: {
+          workspaceId: workspace.id,
+          templateId: template.id,
+          runId: "run-id-1",
+          nodeId: "node-id-1",
+          messageId: "message-id-1",
+        } satisfies MessageTags,
+        userPropertyAssignments: {
+          id: "user-1",
+          phone: "+91 84272-69387",
+        },
+        userId: "user-1",
+        useDraft: false,
+        subscriptionGroupDetails: {
+          id: subscriptionGroup.id,
+          name: subscriptionGroup.name,
+          type: SubscriptionGroupType.OptOut,
+          action: null,
+        },
+        providerOverride: SmsProviderType.Celetel,
+      });
+
+      expect(result.isOk()).toBe(true);
+      expect(mockAxios.get).toHaveBeenCalledWith(
+        "https://sms.example.com/send",
+        expect.objectContaining({
+          params: expect.objectContaining({
+            username: "stage-user",
+            password: "stage-password",
+            to: "918427269387",
+            from: "STAGEN",
+            text: "Hello from STAGE",
+            dltPrincipalEntityId: "dlt-pe-1",
+            dltContentId: "dlt-template-1",
+          }),
+        }),
+      );
+    });
+
     describe("when sent from a child workspace", () => {
       let childWorkspace: Workspace;
       let parentWorkspace: Workspace;

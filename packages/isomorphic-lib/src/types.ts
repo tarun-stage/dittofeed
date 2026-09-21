@@ -196,6 +196,7 @@ export type ChannelType = (typeof ChannelType)[keyof typeof ChannelType];
 export enum SmsProviderType {
   Twilio = "Twilio",
   SignalWire = "SignalWire",
+  Celetel = "Celetel",
   Test = "Test",
 }
 
@@ -1141,6 +1142,13 @@ export const SignalWireOverride = Type.Object({
 
 export type SignalWireOverride = Static<typeof SignalWireOverride>;
 
+export const CeletelOverride = Type.Object({
+  providerOverride: Type.Literal(SmsProviderType.Celetel),
+  senderOverride: Type.Optional(Type.Null()),
+});
+
+export type CeletelOverride = Static<typeof CeletelOverride>;
+
 export const TestSmsOverride = Type.Object({
   providerOverride: Type.Literal(SmsProviderType.Test),
   senderOverride: Type.Optional(Type.Null()),
@@ -1152,6 +1160,7 @@ export const SmsProviderOverride = Type.Union([
   NoSmsProviderOverride,
   TwilioOverride,
   SignalWireOverride,
+  CeletelOverride,
   TestSmsOverride,
 ]);
 
@@ -1161,6 +1170,7 @@ export const SmsMessageVariant = Type.Union([
   Type.Composite([BaseSmsMessageVariant, NoSmsProviderOverride]),
   Type.Composite([BaseSmsMessageVariant, TwilioOverride]),
   Type.Composite([BaseSmsMessageVariant, SignalWireOverride]),
+  Type.Composite([BaseSmsMessageVariant, CeletelOverride]),
   Type.Composite([BaseSmsMessageVariant, TestSmsOverride]),
 ]);
 
@@ -1779,6 +1789,7 @@ export type MobilePushTemplateResource = Static<
 
 const SmsContents = Type.Object({
   body: Type.String(),
+  dltContentTemplateId: Type.Optional(Type.String()),
   identifierKey: Type.Optional(
     Type.String({
       description:
@@ -3961,6 +3972,17 @@ export const SignalWireSecret = Type.Object({
 
 export type SignalWireSecret = Static<typeof SignalWireSecret>;
 
+export const CeletelSecret = Type.Object({
+  type: Type.Literal(SmsProviderType.Celetel),
+  endpoint: Type.Optional(Type.String()),
+  username: Type.Optional(Type.String()),
+  password: Type.Optional(Type.String()),
+  senderId: Type.Optional(Type.String()),
+  dltPrincipalEntityId: Type.Optional(Type.String()),
+});
+
+export type CeletelSecret = Static<typeof CeletelSecret>;
+
 export const TestSmsSecret = Type.Object({
   type: Type.Literal(SmsProviderType.Test),
 });
@@ -3979,6 +4001,7 @@ export const SmsProviderSecret = Type.Union([
   TwilioSecret,
   TestSmsSecret,
   SignalWireSecret,
+  CeletelSecret,
 ]);
 
 export type SmsProviderSecret = Static<typeof SmsProviderSecret>;
@@ -3999,9 +4022,18 @@ export const SignalWireSmsProvider = Type.Object({
 
 export type SignalWireSmsProvider = Static<typeof SignalWireSmsProvider>;
 
+export const CeletelSmsProvider = Type.Object({
+  id: Type.String(),
+  workspaceId: Type.String(),
+  type: Type.Optional(Type.Literal(SmsProviderType.Celetel)),
+});
+
+export type CeletelSmsProvider = Static<typeof CeletelSmsProvider>;
+
 export const PersistedSmsProvider = Type.Union([
   TwilioSmsProvider,
   SignalWireSmsProvider,
+  CeletelSmsProvider,
   TestSmsProvider,
 ]);
 
@@ -4033,6 +4065,14 @@ export const SmsSignalWireSuccess = Type.Object({
 
 export type SmsSignalWireSuccess = Static<typeof SmsSignalWireSuccess>;
 
+export const SmsCeletelSuccess = Type.Object({
+  type: Type.Literal(SmsProviderType.Celetel),
+  status: Type.Number(),
+  messageId: Type.String(),
+});
+
+export type SmsCeletelSuccess = Static<typeof SmsCeletelSuccess>;
+
 export const SmsTestSuccess = Type.Object({
   type: Type.Literal(SmsProviderType.Test),
 });
@@ -4042,6 +4082,7 @@ export type SmsTestSuccess = Static<typeof SmsTestSuccess>;
 export const SmsServiceProviderSuccess = Type.Union([
   SmsTwilioSuccess,
   SmsSignalWireSuccess,
+  SmsCeletelSuccess,
   SmsTestSuccess,
 ]);
 
@@ -4503,9 +4544,20 @@ export type MessageSignalWireServiceFailure = Static<
   typeof MessageSignalWireServiceFailure
 >;
 
+export const MessageCeletelServiceFailure = Type.Object({
+  type: Type.Literal(SmsProviderType.Celetel),
+  status: Type.Number(),
+  message: Type.Optional(Type.String()),
+});
+
+export type MessageCeletelServiceFailure = Static<
+  typeof MessageCeletelServiceFailure
+>;
+
 export const SmsServiceProviderFailure = Type.Union([
   MessageTwilioServiceFailure,
   MessageSignalWireServiceFailure,
+  MessageCeletelServiceFailure,
 ]);
 
 export type SmsServiceProviderFailure = Static<
@@ -6060,6 +6112,7 @@ export const BroadcastSmsMessageVariant = Type.Union([
   Type.Composite([BaseBroadcastSmsMessageVariant, NoSmsProviderOverride]),
   Type.Composite([BaseBroadcastSmsMessageVariant, TwilioOverride]),
   Type.Composite([BaseBroadcastSmsMessageVariant, SignalWireOverride]),
+  Type.Composite([BaseBroadcastSmsMessageVariant, CeletelOverride]),
   Type.Composite([BaseBroadcastSmsMessageVariant, TestSmsOverride]),
 ]);
 

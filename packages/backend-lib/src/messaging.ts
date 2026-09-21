@@ -90,6 +90,7 @@ import {
   BatchMessageUsersResponse,
   BatchMessageUsersResult,
   BatchMessageUsersResultTypeEnum,
+  CeletelSecret,
   ChannelType,
   EmailContentsType,
   EmailProviderSecret,
@@ -2144,6 +2145,95 @@ export async function sendSms(
           },
         },
       });
+    }
+    case SmsProviderType.Celetel: {
+      const configResult = schemaValidateWithErr(
+        parsedConfigResult.value,
+        CeletelSecret,
+      );
+      if (configResult.isErr()) {
+        return err({
+          type: InternalEventType.BadWorkspaceConfiguration,
+          variant: {
+            type: BadWorkspaceConfigurationType.MessageServiceProviderMisconfigured,
+            message: configResult.error.message,
+          },
+        });
+      }
+
+      const {
+        endpoint = "https://api.celetel.com/api/v1/send",
+        username,
+        password,
+        senderId,
+        dltPrincipalEntityId,
+      } = configResult.value;
+      const { dltContentTemplateId } = messageTemplateDefinition;
+      const requiredConfig: [string, string | undefined][] = [
+        ["username", username],
+        ["password", password],
+        ["senderId", senderId],
+        ["dltPrincipalEntityId", dltPrincipalEntityId],
+        ["dltContentTemplateId", dltContentTemplateId],
+      ];
+      const missingConfig = requiredConfig.find(([, value]) => !value);
+      if (missingConfig) {
+        const [missingConfigName] = missingConfig;
+        return err({
+          type: InternalEventType.BadWorkspaceConfiguration,
+          variant: {
+            type: BadWorkspaceConfigurationType.MessageServiceProviderMisconfigured,
+            message: `missing ${missingConfigName} in Celetel SMS configuration`,
+          },
+        });
+      }
+
+      const messageId = `${userId}|${Date.now()}|${randomUUID()}`;
+      try {
+        const response = await axios.get(endpoint, {
+          params: {
+            username,
+            password,
+            to: to.replace(/[\s-]/g, "").replace(/^\+/, ""),
+            from: senderId,
+            text: body,
+            unicode: true,
+            dltPrincipalEntityId,
+            dltContentId: dltContentTemplateId,
+            corelationId: messageId,
+          },
+          timeout: 10_000,
+        });
+        return ok({
+          type: InternalEventType.MessageSent,
+          variant: {
+            type: ChannelType.Sms,
+            body,
+            to,
+            provider: {
+              type: SmsProviderType.Celetel,
+              status: response.status,
+              messageId,
+            },
+          },
+        });
+      } catch (error) {
+        const status = axios.isAxiosError(error)
+          ? error.response?.status ?? 0
+          : 0;
+        const message = error instanceof Error ? error.message : String(error);
+        return err({
+          type: InternalEventType.MessageFailure,
+          variant: {
+            type: ChannelType.Sms,
+            provider: {
+              type: SmsProviderType.Celetel,
+              status,
+              message,
+            },
+          },
+        });
+      }
     }
     case SmsProviderType.Test:
       return ok({
