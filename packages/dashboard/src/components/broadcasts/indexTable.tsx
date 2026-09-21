@@ -26,6 +26,7 @@ import {
 import {
   Box,
   Button,
+  Checkbox,
   Chip,
   CircularProgress,
   Dialog,
@@ -63,22 +64,31 @@ import {
   getCoreRowModel,
   getPaginationRowModel,
   getSortedRowModel,
+  HeaderContext,
+  RowSelectionState,
   SortingState,
   useReactTable,
 } from "@tanstack/react-table";
-import { AxiosError } from "axios";
+import axios, { AxiosError } from "axios";
 import formatDistanceToNow from "date-fns/formatDistanceToNow";
 import {
   BroadcastResource,
   BroadcastResourceV2,
   BroadcastV2Config,
   ChannelType,
+  CompletionStatus,
   DuplicateResourceTypeEnum,
+  UpdateBroadcastArchiveRequest,
 } from "isomorphic-lib/src/types";
 import Link from "next/link";
 import React, { useEffect, useMemo, useRef, useState } from "react";
 
-import { useUniversalRouter } from "../../lib/authModeProvider";
+import { useAppStorePick } from "../../lib/appStore";
+import {
+  useAuthHeaders,
+  useBaseApiUrl,
+  useUniversalRouter,
+} from "../../lib/authModeProvider";
 import { useArchiveBroadcastMutation } from "../../lib/useArchiveBroadcastMutation";
 import { useBroadcastsQuery } from "../../lib/useBroadcastsQuery";
 import { useCreateBroadcastMutation } from "../../lib/useCreateBroadcastMutation";
@@ -87,6 +97,29 @@ import { GreyButton, greyButtonStyle } from "../greyButtonStyle";
 
 // Use the union type for the table row data
 type Row = BroadcastResource | BroadcastResourceV2;
+
+function SelectionHeader({ table }: HeaderContext<Row, unknown>) {
+  return (
+    <Checkbox
+      size="small"
+      checked={table.getIsAllPageRowsSelected()}
+      indeterminate={table.getIsSomePageRowsSelected()}
+      onChange={table.getToggleAllPageRowsSelectedHandler()}
+      inputProps={{ "aria-label": "Select all campaigns on this page" }}
+    />
+  );
+}
+
+function SelectionCell({ row }: CellContext<Row, unknown>) {
+  return (
+    <Checkbox
+      size="small"
+      checked={row.getIsSelected()}
+      onChange={row.getToggleSelectedHandler()}
+      inputProps={{ "aria-label": `Select ${row.original.name}` }}
+    />
+  );
+}
 
 // Helper function to format status strings
 function humanizeBroadcastStatus(status: string): string {
@@ -397,8 +430,10 @@ function ScheduledAtCell({ row }: CellContext<Row, unknown>) {
 export default function BroadcastsTable() {
   const theme = useTheme();
   const universalRouter = useUniversalRouter();
-  // const queryClient = useQueryClient(); // Not used directly here anymore for mutations
-  // const { apiBase, workspace } = useAppStorePick(["apiBase", "workspace"]); // Not used directly here anymore for mutations
+  const queryClient = useQueryClient();
+  const { workspace } = useAppStorePick(["workspace"]);
+  const authHeaders = useAuthHeaders();
+  const baseApiUrl = useBaseApiUrl();
 
   const nameInputRef = useRef<HTMLInputElement>(null);
 
@@ -413,6 +448,10 @@ export default function BroadcastsTable() {
   const [searchQuery, setSearchQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState("All");
   const [sorting, setSorting] = useState<SortingState>([]);
+  const [rowSelection, setRowSelection] = useState<RowSelectionState>({});
+  const [bulkActionsAnchor, setBulkActionsAnchor] =
+    useState<null | HTMLElement>(null);
+  const [bulkActionPending, setBulkActionPending] = useState(false);
 
   const query = useBroadcastsQuery();
   const createBroadcastMutation = useCreateBroadcastMutation();
@@ -486,6 +525,13 @@ export default function BroadcastsTable() {
   const columns = useMemo<ColumnDef<Row>[]>(() => {
     return [
       {
+        id: "select",
+        header: SelectionHeader,
+        cell: SelectionCell,
+        enableSorting: false,
+        size: 56,
+      },
+      {
         id: "name",
         header: "Name",
         accessorKey: "name",
@@ -531,9 +577,13 @@ export default function BroadcastsTable() {
     getPaginationRowModel: getPaginationRowModel(),
     onPaginationChange: setPagination,
     onSortingChange: setSorting,
+    onRowSelectionChange: setRowSelection,
+    enableRowSelection: true,
+    getRowId: (row) => row.id,
     state: {
       pagination,
       sorting,
+      rowSelection,
     },
     // Pass functions via meta
     meta: {
@@ -546,6 +596,73 @@ export default function BroadcastsTable() {
       },
     },
   });
+
+  const selectedBroadcasts = table
+    .getSelectedRowModel()
+    .rows.map((row) => row.original);
+  const selectedArchivedCount = selectedBroadcasts.filter(
+    (broadcast) => broadcast.archived,
+  ).length;
+  const protectedStatuses = new Set(["Running", "Scheduled", "Paused"]);
+  const selectedArchivableCount = selectedBroadcasts.filter(
+    (broadcast) =>
+      !broadcast.archived && !protectedStatuses.has(broadcast.status),
+  ).length;
+
+  const handleBulkArchive = async (archived: boolean) => {
+    setBulkActionsAnchor(null);
+    if (workspace.type !== CompletionStatus.Successful) {
+      setSnackbarMessage("Workspace is unavailable.");
+      setSnackbarOpen(true);
+      return;
+    }
+
+    const targets = selectedBroadcasts.filter((broadcast) =>
+      archived
+        ? !broadcast.archived && !protectedStatuses.has(broadcast.status)
+        : broadcast.archived,
+    );
+    const skipped = selectedBroadcasts.length - targets.length;
+    if (targets.length === 0) {
+      setSnackbarMessage(
+        archived
+          ? "No selected campaigns can be archived. Active campaigns are protected."
+          : "No archived campaigns selected.",
+      );
+      setSnackbarOpen(true);
+      return;
+    }
+
+    setBulkActionPending(true);
+    const results = await Promise.allSettled(
+      targets.map((broadcast) => {
+        const requestData: UpdateBroadcastArchiveRequest = {
+          workspaceId: workspace.value.id,
+          broadcastId: broadcast.id,
+          archived,
+        };
+        return axios.put(`${baseApiUrl}/broadcasts/archive`, requestData, {
+          headers: authHeaders,
+        });
+      }),
+    );
+    const succeeded = results.filter(
+      (result) => result.status === "fulfilled",
+    ).length;
+    const failed = results.length - succeeded;
+
+    await queryClient.invalidateQueries({ queryKey: ["broadcasts"] });
+    setRowSelection({});
+    setBulkActionPending(false);
+    setSnackbarMessage(
+      `${archived ? "Archived" : "Unarchived"} ${succeeded} campaign${
+        succeeded === 1 ? "" : "s"
+      }${skipped ? `; skipped ${skipped}` : ""}${
+        failed ? `; failed ${failed}` : ""
+      }.`,
+    );
+    setSnackbarOpen(true);
+  };
 
   const handleCreateBroadcast = () => {
     if (broadcastName.trim() && !createBroadcastMutation.isPending) {
@@ -756,6 +873,55 @@ export default function BroadcastsTable() {
             )}
           </ToggleButtonGroup>
         </Stack>
+        {selectedBroadcasts.length > 0 && (
+          <Stack direction="row" spacing={1.5} alignItems="center">
+            <Typography variant="body2" color="text.secondary">
+              {selectedBroadcasts.length} selected
+            </Typography>
+            <Button
+              variant="outlined"
+              size="small"
+              onClick={(event) => setBulkActionsAnchor(event.currentTarget)}
+              disabled={bulkActionPending}
+            >
+              {bulkActionPending ? "Applying..." : "Bulk actions"}
+            </Button>
+            <Button
+              variant="text"
+              size="small"
+              onClick={() => setRowSelection({})}
+              disabled={bulkActionPending}
+            >
+              Clear selection
+            </Button>
+            <Menu
+              anchorEl={bulkActionsAnchor}
+              open={Boolean(bulkActionsAnchor)}
+              onClose={() => setBulkActionsAnchor(null)}
+            >
+              <MenuItem
+                onClick={() => void handleBulkArchive(true)}
+                disabled={selectedArchivableCount === 0}
+              >
+                <ArchiveIcon fontSize="small" sx={{ mr: 1 }} />
+                Archive eligible ({selectedArchivableCount})
+              </MenuItem>
+              <MenuItem
+                onClick={() => void handleBulkArchive(false)}
+                disabled={selectedArchivedCount === 0}
+              >
+                Unarchive ({selectedArchivedCount})
+              </MenuItem>
+            </Menu>
+            {selectedArchivableCount <
+              selectedBroadcasts.filter((broadcast) => !broadcast.archived)
+                .length && (
+              <Typography variant="caption" color="text.secondary">
+                Active campaigns are protected from bulk archive.
+              </Typography>
+            )}
+          </Stack>
+        )}
         <TableContainer component={Paper}>
           <Table stickyHeader>
             <TableHead>
