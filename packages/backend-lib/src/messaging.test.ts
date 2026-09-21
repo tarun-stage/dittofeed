@@ -25,6 +25,7 @@ import {
 import { sendNotification as sendFcmNotification } from "./destinations/fcm";
 import {
   batchMessageUsers,
+  normalizeCeletelWhatsAppTemplates,
   sendEmail,
   sendMobilePush,
   sendSms,
@@ -102,6 +103,35 @@ async function setupEmailTemplate(workspace: Workspace) {
   ]);
   return { template, subscriptionGroup };
 }
+
+describe("normalizeCeletelWhatsAppTemplates", () => {
+  it("normalizes Celetel and Meta template-list response shapes", () => {
+    expect(
+      normalizeCeletelWhatsAppTemplates({
+        data: {
+          data: {
+            0: {
+              name: "welcome_hi",
+              language: "hi",
+              status: "APPROVED",
+              category: "MARKETING",
+              components: [{ type: "BODY", text: "Namaste {{1}}" }],
+            },
+          },
+        },
+      }),
+    ).toEqual([
+      {
+        name: "welcome_hi",
+        languageCode: "hi",
+        status: "APPROVED",
+        category: "MARKETING",
+        components: [{ type: "BODY", text: "Namaste {{1}}" }],
+        bodyText: "Namaste {{1}}",
+      },
+    ]);
+  });
+});
 
 describe("messaging", () => {
   let workspace: Workspace;

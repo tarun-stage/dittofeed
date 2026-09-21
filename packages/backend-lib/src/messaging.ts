@@ -3,7 +3,7 @@ import { MessagesMessage as MailChimpMessage } from "@mailchimp/mailchimp_transa
 import { MailDataRequired } from "@sendgrid/mail";
 import { Type } from "@sinclair/typebox";
 import axios, { AxiosError, AxiosHeaders, AxiosResponse } from "axios";
-import { randomUUID } from "crypto";
+import { randomUUID, webcrypto } from "crypto";
 import { and, eq, SQL } from "drizzle-orm";
 import { toMjml } from "emailo/src/toMjml";
 import { CHANNEL_IDENTIFIERS } from "isomorphic-lib/src/channels";
@@ -2515,11 +2515,42 @@ const CeletelLoginResponse = Type.Object({
   ),
 });
 
+const CeletelJwksResponse = Type.Object({
+  keys: Type.Array(
+    Type.Object({
+      kty: Type.String(),
+      n: Type.String(),
+      e: Type.String(),
+      kid: Type.Optional(Type.String()),
+      alg: Type.Optional(Type.String()),
+      use: Type.Optional(Type.String()),
+      ext: Type.Optional(Type.Boolean()),
+      key_ops: Type.Optional(Type.Array(Type.String())),
+    }),
+  ),
+});
+
+const CeletelPortalLoginResponse = Type.Object({
+  accessToken: Type.Optional(Type.String()),
+  token: Type.Optional(Type.String()),
+  data: Type.Optional(
+    Type.Object({
+      accessToken: Type.Optional(Type.String()),
+      token: Type.Optional(Type.String()),
+    }),
+  ),
+});
+
 const celetelTokenCache = new Map<
   string,
   { token: string; expiresAt: number }
 >();
 const celetelTokenRequests = new Map<string, Promise<string>>();
+const celetelPortalTokenCache = new Map<
+  string,
+  { token: string; expiresAt: number }
+>();
+const celetelPortalTokenRequests = new Map<string, Promise<string>>();
 
 async function getCeletelToken({
   email,
@@ -2561,6 +2592,208 @@ async function getCeletelToken({
     .finally(() => celetelTokenRequests.delete(email));
   celetelTokenRequests.set(email, request);
   return request;
+}
+
+function base64Url(value: ArrayBuffer): string {
+  return Buffer.from(value).toString("base64url");
+}
+
+async function getCeletelPortalToken({
+  email,
+  password,
+}: {
+  email: string;
+  password: string;
+}): Promise<string> {
+  const cached = celetelPortalTokenCache.get(email);
+  if (cached && cached.expiresAt > Date.now()) return cached.token;
+  const pending = celetelPortalTokenRequests.get(email);
+  if (pending) return pending;
+
+  const request = axios
+    .get("https://one.celetel.com/api/user-mgmt/v1/.well-known/jwks", {
+      timeout: 8000,
+    })
+    .then(async (jwksResponse) => {
+      const jwks = schemaValidateWithErr(
+        jwksResponse.data,
+        CeletelJwksResponse,
+      );
+      const jwk = jwks.isOk() ? jwks.value.keys[0] : undefined;
+      if (!jwk) throw new Error("Celetel encryption key is unavailable");
+
+      const publicKey = await webcrypto.subtle.importKey(
+        "jwk",
+        jwk,
+        { name: "RSA-OAEP", hash: "SHA-256" },
+        false,
+        ["encrypt"],
+      );
+      const aesKey = await webcrypto.subtle.generateKey(
+        { name: "AES-GCM", length: 256 },
+        true,
+        ["encrypt"],
+      );
+      const iv = webcrypto.getRandomValues(new Uint8Array(12));
+      const encryptedData = await webcrypto.subtle.encrypt(
+        { name: "AES-GCM", iv },
+        aesKey,
+        new TextEncoder().encode(JSON.stringify({ email, password })),
+      );
+      const rawKey = await webcrypto.subtle.exportKey("raw", aesKey);
+      const encryptedKey = await webcrypto.subtle.encrypt(
+        { name: "RSA-OAEP" },
+        publicKey,
+        rawKey,
+      );
+      return axios.post(
+        "https://one.celetel.com/api/user-mgmt/v1/auth/login",
+        {
+          encKey: base64Url(encryptedKey),
+          iv: base64Url(iv.buffer),
+          data: base64Url(encryptedData),
+        },
+        {
+          timeout: 8000,
+          headers: {
+            "Content-Type": "application/json",
+            "X-Encrypted": "true",
+          },
+        },
+      );
+    })
+    .then((response) => {
+      const parsed = schemaValidateWithErr(
+        response.data,
+        CeletelPortalLoginResponse,
+      );
+      if (parsed.isErr()) {
+        throw new Error("Celetel portal login returned an invalid response");
+      }
+      const token =
+        parsed.value.accessToken ??
+        parsed.value.token ??
+        parsed.value.data?.accessToken ??
+        parsed.value.data?.token;
+      if (!token) throw new Error("Celetel portal login returned no token");
+      celetelPortalTokenCache.set(email, {
+        token,
+        expiresAt: Date.now() + 50 * 60 * 1000,
+      });
+      return token;
+    })
+    .finally(() => celetelPortalTokenRequests.delete(email));
+  celetelPortalTokenRequests.set(email, request);
+  return request;
+}
+
+export interface CeletelWhatsAppTemplate {
+  name: string;
+  languageCode: string;
+  status: string;
+  category?: string;
+  components: unknown[];
+  bodyText?: string;
+}
+
+function recordValue(value: unknown): Record<string, unknown> | null {
+  return R.isPlainObject(value) ? value : null;
+}
+
+function celetelTemplateRows(value: unknown): unknown[] {
+  if (Array.isArray(value)) return value;
+  const record = recordValue(value);
+  if (!record) return [];
+  for (const key of ["templates", "results", "data"]) {
+    const nested = record[key];
+    if (Array.isArray(nested)) return nested;
+    const nestedRecord = recordValue(nested);
+    if (nestedRecord) {
+      const rows = celetelTemplateRows(nestedRecord);
+      if (rows.length > 0) return rows;
+      const numericRows = Object.entries(nestedRecord)
+        .filter(([nestedKey]) => /^\d+$/.test(nestedKey))
+        .map(([, nestedValue]) => nestedValue);
+      if (numericRows.length > 0) return numericRows;
+    }
+  }
+  return [];
+}
+
+export function normalizeCeletelWhatsAppTemplates(
+  value: unknown,
+): CeletelWhatsAppTemplate[] {
+  return celetelTemplateRows(value).flatMap((row) => {
+    const template = recordValue(row);
+    if (!template) return [];
+    const name = template.name ?? template.template_name;
+    const language = template.language ?? template.language_code;
+    const languageRecord = recordValue(language);
+    const languageCode =
+      typeof language === "string" ? language : languageRecord?.code;
+    if (typeof name !== "string" || typeof languageCode !== "string") {
+      return [];
+    }
+    const components: unknown[] = Array.isArray(template.components)
+      ? template.components.map((component: unknown) => component)
+      : [];
+    const body = components.find((component) => {
+      const componentRecord = recordValue(component);
+      return (
+        typeof componentRecord?.type === "string" &&
+        componentRecord.type.toUpperCase() === "BODY"
+      );
+    });
+    const bodyRecord = recordValue(body);
+    const bodyText =
+      typeof bodyRecord?.text === "string" ? bodyRecord.text : undefined;
+    return [
+      {
+        name,
+        languageCode,
+        status:
+          typeof template.status === "string" ? template.status : "APPROVED",
+        category:
+          typeof template.category === "string" ? template.category : undefined,
+        components,
+        bodyText,
+      },
+    ];
+  });
+}
+
+export async function fetchCeletelWhatsAppTemplates({
+  email,
+  password,
+  wabaId,
+  endpoint,
+}: {
+  email: string;
+  password: string;
+  wabaId: string;
+  endpoint?: string;
+}): Promise<CeletelWhatsAppTemplate[]> {
+  const token = await getCeletelPortalToken({ email, password });
+  const templateUrl = new URL(
+    endpoint ?? "https://one.celetel.com/api/waba/templates",
+  );
+  if (
+    templateUrl.protocol !== "https:" ||
+    templateUrl.hostname !== "one.celetel.com"
+  ) {
+    throw new Error("Celetel template endpoint is invalid");
+  }
+  const response = await axios.request({
+    url: templateUrl.toString(),
+    method: "GET",
+    params: { waba_id: wabaId, status: "APPROVED", limit: 100 },
+    timeout: 15000,
+    headers: {
+      Authorization: `Bearer ${token}`,
+      Accept: "application/json",
+    },
+  });
+  return normalizeCeletelWhatsAppTemplates(response.data);
 }
 
 function normalizeCeletelPhone(phone: string): string {

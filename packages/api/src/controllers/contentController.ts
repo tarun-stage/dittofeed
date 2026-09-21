@@ -1,4 +1,5 @@
 import { TypeBoxTypeProvider } from "@fastify/type-provider-typebox";
+import { Type } from "@sinclair/typebox";
 import { db } from "backend-lib/src/db";
 import * as schema from "backend-lib/src/db/schema";
 import { deleteMessageTemplate } from "backend-lib/src/journeys";
@@ -7,6 +8,7 @@ import logger from "backend-lib/src/logger";
 import {
   batchMessageUsers,
   enrichMessageTemplate,
+  fetchCeletelWhatsAppTemplates,
   testTemplate,
   upsertMessageTemplate,
 } from "backend-lib/src/messaging";
@@ -57,6 +59,52 @@ import {
 } from "isomorphic-lib/src/types";
 import { DEFAULT_WEBHOOK_DEFINITION } from "isomorphic-lib/src/webhook";
 import * as R from "remeda";
+
+const RefreshCeletelTemplatesRequest = Type.Object({
+  workspaceId: Type.String(),
+});
+
+const RefreshCeletelTemplatesResponse = Type.Object({
+  fetched: Type.Number(),
+  imported: Type.Number(),
+  updated: Type.Number(),
+  skipped: Type.Number(),
+});
+
+function celetelTemplateIdentity(definition: unknown): string | null {
+  if (
+    typeof definition !== "object" ||
+    definition === null ||
+    !("body" in definition) ||
+    typeof definition.body !== "string"
+  ) {
+    return null;
+  }
+  try {
+    const body: unknown = JSON.parse(definition.body);
+    if (typeof body !== "object" || body === null || !("config" in body)) {
+      return null;
+    }
+    const { config } = body;
+    if (typeof config !== "object" || config === null || !("data" in config)) {
+      return null;
+    }
+    const { data } = config;
+    if (
+      typeof data !== "object" ||
+      data === null ||
+      !("templateName" in data) ||
+      !("languageCode" in data) ||
+      typeof data.templateName !== "string" ||
+      typeof data.languageCode !== "string"
+    ) {
+      return null;
+    }
+    return `${data.templateName}\u0000${data.languageCode}`;
+  } catch {
+    return null;
+  }
+}
 
 // eslint-disable-next-line @typescript-eslint/require-await
 export default async function contentController(fastify: FastifyInstance) {
@@ -205,6 +253,133 @@ export default async function contentController(fastify: FastifyInstance) {
         unwrap(enrichMessageTemplate(t)),
       );
       return reply.status(200).send({ templates });
+    },
+  );
+
+  fastify.withTypeProvider<TypeBoxTypeProvider>().post(
+    "/templates/celetel/refresh",
+    {
+      schema: {
+        description: "Refresh approved WhatsApp templates from Celetel",
+        tags: ["Content"],
+        body: RefreshCeletelTemplatesRequest,
+        response: {
+          200: RefreshCeletelTemplatesResponse,
+          400: BaseMessageResponse,
+          500: BaseMessageResponse,
+        },
+      },
+    },
+    async (request, reply) => {
+      const webhookSecret = await db().query.secret.findFirst({
+        where: and(
+          eq(schema.secret.workspaceId, request.body.workspaceId),
+          eq(schema.secret.name, SecretNames.Webhook),
+        ),
+      });
+      const validated = schemaValidateWithErr(
+        webhookSecret?.configValue,
+        WebhookSecret,
+      );
+      if (validated.isErr()) {
+        return reply.status(400).send({
+          message: "Celetel WhatsApp credentials are not configured",
+        });
+      }
+      const { celetelEmail, celetelPassword, celetelWabaId } = validated.value;
+      if (!celetelEmail || !celetelPassword || !celetelWabaId) {
+        return reply.status(400).send({
+          message: "Celetel WhatsApp credentials are not configured",
+        });
+      }
+
+      try {
+        const templates = await fetchCeletelWhatsAppTemplates({
+          email: celetelEmail,
+          password: celetelPassword,
+          wabaId: celetelWabaId,
+          endpoint: validated.value.celetelTemplateEndpoint,
+        });
+        const approved = templates.filter(
+          (template) => template.status.toUpperCase() === "APPROVED",
+        );
+        const existing = await db().query.messageTemplate.findMany({
+          where: eq(
+            schema.messageTemplate.workspaceId,
+            request.body.workspaceId,
+          ),
+        });
+        const existingByIdentity = new Map(
+          existing.flatMap((template) => {
+            const identity = celetelTemplateIdentity(template.definition);
+            return identity ? [[identity, template] as const] : [];
+          }),
+        );
+        const syncResults = await Promise.all(
+          approved.map(async (template) => {
+            const identity = `${template.name}\u0000${template.languageCode}`;
+            const prior = existingByIdentity.get(identity);
+            const campaignComponents = template.bodyText
+              ? [{ type: "body", body: { text: template.bodyText } }]
+              : [];
+            const result = await upsertMessageTemplate({
+              workspaceId: request.body.workspaceId,
+              id: prior?.id,
+              name: `WhatsApp · ${template.name} · ${template.languageCode}`,
+              definition: {
+                type: ChannelType.Webhook,
+                identifierKey: "phone",
+                body: JSON.stringify({
+                  config: {
+                    url: "celetel://campaign",
+                    method: "POST",
+                    responseType: "json",
+                    data: {
+                      to: "{{ user.phone }}",
+                      templateName: template.name,
+                      languageCode: template.languageCode,
+                      components: campaignComponents,
+                    },
+                  },
+                  secret: {
+                    data: {
+                      email: "{{ secrets.celetelEmail }}",
+                      password: "{{ secrets.celetelPassword }}",
+                      wabaId: "{{ secrets.celetelWabaId }}",
+                    },
+                  },
+                }),
+              },
+            });
+            if (result.isErr()) return "skipped";
+            return prior ? "updated" : "imported";
+          }),
+        );
+        const imported = syncResults.filter(
+          (result) => result === "imported",
+        ).length;
+        const updated = syncResults.filter(
+          (result) => result === "updated",
+        ).length;
+        const skipped =
+          templates.length -
+          approved.length +
+          syncResults.filter((result) => result === "skipped").length;
+        return reply.status(200).send({
+          fetched: templates.length,
+          imported,
+          updated,
+          skipped,
+        });
+      } catch (error) {
+        logger().error(
+          { err: error, workspaceId: request.body.workspaceId },
+          "failed to refresh Celetel WhatsApp templates",
+        );
+        return reply.status(500).send({
+          message: "Celetel templates could not be refreshed",
+        });
+      }
     },
   );
 

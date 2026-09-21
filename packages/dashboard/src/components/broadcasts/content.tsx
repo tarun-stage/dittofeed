@@ -1,11 +1,16 @@
+import RefreshIcon from "@mui/icons-material/Refresh";
 import {
   Box,
+  Button,
+  CircularProgress,
   Stack,
   TextField,
   ToggleButton,
   ToggleButtonGroup,
   Typography,
 } from "@mui/material";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
+import axios from "axios";
 import {
   getBroadcastMessageTemplateId,
   getBroadcastMessageTemplateName,
@@ -18,9 +23,11 @@ import {
   EmailContentsType,
   LowCodeEmailDefaultType,
 } from "isomorphic-lib/src/types";
+import { useSnackbar } from "notistack";
 import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { useAppStorePick } from "../../lib/appStore";
+import { useAuthHeaders, useBaseApiUrl } from "../../lib/authModeProvider";
 import { getDefaultMessageTemplateDefinition } from "../../lib/defaultTemplateDefinition";
 import { ResourceType } from "../../lib/types";
 import { useBroadcastMutation } from "../../lib/useBroadcastMutation";
@@ -40,6 +47,13 @@ interface WhatsAppTemplatePreview {
   message: string;
 }
 
+interface RefreshCeletelTemplatesResponse {
+  fetched: number;
+  imported: number;
+  updated: number;
+  skipped: number;
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
 }
@@ -51,9 +65,10 @@ function getWhatsAppTemplatePreview(
     const parsed: unknown = JSON.parse(body);
     if (!isRecord(parsed) || !isRecord(parsed.config)) return null;
     const { data } = parsed.config;
-    if (!isRecord(data) || !isRecord(data.template)) return null;
-
-    const { namespace: templateName, languageCode } = data.template;
+    if (!isRecord(data)) return null;
+    const legacyTemplate = isRecord(data.template) ? data.template : null;
+    const templateName = legacyTemplate?.namespace ?? data.templateName;
+    const languageCode = legacyTemplate?.languageCode ?? data.languageCode;
     if (typeof templateName !== "string" || typeof languageCode !== "string") {
       return null;
     }
@@ -384,6 +399,10 @@ function BroadcastMessageTemplateEditor({
 
 export default function Content({ state }: { state: BroadcastState }) {
   const { workspace } = useAppStorePick(["workspace"]);
+  const queryClient = useQueryClient();
+  const { enqueueSnackbar } = useSnackbar();
+  const baseApiUrl = useBaseApiUrl();
+  const authHeaders = useAuthHeaders();
   const { data: broadcast } = useBroadcastQuery(state.id);
   const broadcastMutation = useBroadcastMutation(state.id);
   const [selectExistingTemplate, setSelectExistingTemplate] = useState<
@@ -395,6 +414,36 @@ export default function Content({ state }: { state: BroadcastState }) {
   const { data: messageTemplate } = useMessageTemplateQuery(
     broadcast?.messageTemplateId,
   );
+  const refreshCeletelTemplates = useMutation({
+    mutationFn: async () => {
+      if (workspace.type !== CompletionStatus.Successful) {
+        throw new Error("Workspace is unavailable");
+      }
+      return axios.post<RefreshCeletelTemplatesResponse>(
+        `${baseApiUrl}/content/templates/celetel/refresh`,
+        { workspaceId: workspace.value.id },
+        { headers: authHeaders },
+      );
+    },
+    onSuccess: async ({ data }) => {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["resources"] }),
+        queryClient.invalidateQueries({ queryKey: ["messageTemplates"] }),
+      ]);
+      enqueueSnackbar(
+        `Celetel refreshed: ${data.imported} added, ${data.updated} updated`,
+        { variant: "success" },
+      );
+    },
+    onError: (error) => {
+      const message = axios.isAxiosError<{ message?: string }>(error)
+        ? error.response?.data.message
+        : undefined;
+      enqueueSnackbar(message ?? "Celetel templates could not be refreshed", {
+        variant: "error",
+      });
+    },
+  });
 
   useEffect(() => {
     if (
@@ -529,9 +578,26 @@ export default function Content({ state }: { state: BroadcastState }) {
     >
       <Stack direction="row" spacing={2}>
         {isWhatsApp ? (
-          <Typography variant="subtitle1">
-            Approved WhatsApp Template
-          </Typography>
+          <Stack direction="row" spacing={1} alignItems="center">
+            <Typography variant="subtitle1">
+              Approved WhatsApp Template
+            </Typography>
+            <Button
+              size="small"
+              variant="outlined"
+              startIcon={
+                refreshCeletelTemplates.isPending ? (
+                  <CircularProgress size={16} />
+                ) : (
+                  <RefreshIcon />
+                )
+              }
+              disabled={disabled || refreshCeletelTemplates.isPending}
+              onClick={() => refreshCeletelTemplates.mutate()}
+            >
+              Refresh from Celetel
+            </Button>
+          </Stack>
         ) : (
           <ToggleButtonGroup
             value={selectExistingTemplate}
