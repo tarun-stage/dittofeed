@@ -2612,7 +2612,7 @@ async function getCeletelPortalToken({
 
   const request = axios
     .get("https://one.celetel.com/api/user-mgmt/v1/.well-known/jwks", {
-      timeout: 8000,
+      timeout: 20_000,
     })
     .then(async (jwksResponse) => {
       const jwks = schemaValidateWithErr(
@@ -2654,7 +2654,7 @@ async function getCeletelPortalToken({
           data: base64Url(encryptedData),
         },
         {
-          timeout: 8000,
+          timeout: 20_000,
           headers: {
             "Content-Type": "application/json",
             "X-Encrypted": "true",
