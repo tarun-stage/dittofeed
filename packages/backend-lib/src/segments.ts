@@ -1249,7 +1249,7 @@ interface StageWarehouseTable {
 }
 
 const STAGE_WAREHOUSE_EVENT_TABLES: Record<string, StageWarehouseTable[]> = {
-  app_open: [{ database: "raw_prod_events", table: "app_open" }],
+  app_open: [{ database: "raw_prod_events", table: "fct_app_open" }],
   playback_started: [
     { database: "raw_prod_events", table: "playback_started" },
   ],
