@@ -2429,6 +2429,7 @@ export async function sendWebhook({
           await sendCeletelCampaign({
             configData: renderedConfig.data,
             secretData: renderedSecret?.data,
+            workspaceSecretData: parsedConfigResult,
             messageTags,
           })
         : await axios.request({
@@ -2500,9 +2501,12 @@ const CeletelCampaignData = Type.Object({
 });
 
 const CeletelCampaignSecret = Type.Object({
-  email: Type.String(),
-  password: Type.String(),
-  wabaId: Type.String(),
+  email: Type.Optional(Type.String()),
+  password: Type.Optional(Type.String()),
+  wabaId: Type.Optional(Type.String()),
+  endpoint: Type.Optional(Type.String()),
+  apiKey: Type.Optional(Type.String()),
+  wabaNumber: Type.Optional(Type.String()),
 });
 
 const CeletelLoginResponse = Type.Object({
@@ -2807,19 +2811,80 @@ function normalizeCeletelPhone(phone: string): string {
 async function sendCeletelCampaign({
   configData,
   secretData,
+  workspaceSecretData,
   messageTags,
 }: {
   configData: unknown;
   secretData: unknown;
+  workspaceSecretData: Record<string, string>;
   messageTags?: MessageTags;
 }): Promise<AxiosResponse> {
   const configResult = schemaValidateWithErr(configData, CeletelCampaignData);
-  const secretResult = schemaValidateWithErr(secretData, CeletelCampaignSecret);
+  const templateSecretResult = schemaValidateWithErr(
+    secretData,
+    CeletelCampaignSecret,
+  );
+  const templateSecret = templateSecretResult.isOk()
+    ? templateSecretResult.value
+    : undefined;
+  const secretResult = schemaValidateWithErr(
+    {
+      email: templateSecret?.email ?? workspaceSecretData.celetelEmail,
+      password: templateSecret?.password ?? workspaceSecretData.celetelPassword,
+      wabaId: templateSecret?.wabaId ?? workspaceSecretData.celetelWabaId,
+      endpoint: templateSecret?.endpoint ?? workspaceSecretData.celetelEndpoint,
+      apiKey: templateSecret?.apiKey ?? workspaceSecretData.celetelApiKey,
+      wabaNumber:
+        templateSecret?.wabaNumber ?? workspaceSecretData.celetelWabaNumber,
+    },
+    CeletelCampaignSecret,
+  );
   if (configResult.isErr() || secretResult.isErr()) {
     throw new Error("Celetel webhook configuration is invalid");
   }
 
-  const token = await getCeletelToken(secretResult.value);
+  const { endpoint, apiKey, wabaNumber } = secretResult.value;
+  if (endpoint && apiKey && wabaNumber) {
+    const umsUrl = new URL(endpoint);
+    if (umsUrl.protocol !== "https:" || umsUrl.hostname !== "one.celetel.com") {
+      throw new Error("Celetel UMS endpoint is invalid");
+    }
+    return axios.request({
+      url: umsUrl.toString(),
+      method: "POST",
+      data: {
+        payloadVersion: 0.1,
+        to: normalizeCeletelPhone(configResult.value.to),
+        wabaNumber: normalizeCeletelPhone(wabaNumber),
+        isTemplate: true,
+        msgId: messageTags?.messageId ?? randomUUID(),
+        template: {
+          namespace: configResult.value.templateName,
+          languageCode: configResult.value.languageCode,
+        },
+        components: configResult.value.components ?? [],
+      },
+      timeout: 30000,
+      headers: {
+        "X-api-key": apiKey,
+        "Content-Type": "application/json",
+        Accept: "application/json",
+      },
+    });
+  }
+
+  if (
+    !secretResult.value.email ||
+    !secretResult.value.password ||
+    !secretResult.value.wabaId
+  ) {
+    throw new Error("Celetel webhook credentials are incomplete");
+  }
+
+  const token = await getCeletelToken({
+    email: secretResult.value.email,
+    password: secretResult.value.password,
+  });
   const campaignName = (
     configResult.value.campaignName ??
     `dittofeed-${messageTags?.messageId ?? randomUUID()}`

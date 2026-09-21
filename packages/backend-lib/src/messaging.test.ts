@@ -903,6 +903,95 @@ describe("messaging", () => {
   });
 
   describe("sendWebhook", () => {
+    it("sends a Celetel template through the Stage Engage UMS transport", async () => {
+      unwrap(
+        await insert({
+          table: dbSecret,
+          values: {
+            id: randomUUID(),
+            workspaceId: workspace.id,
+            name: SecretNames.Webhook,
+            configValue: {
+              type: ChannelType.Webhook,
+              celetelEndpoint:
+                "https://one.celetel.com/api/ums/v1/ums-req/messages/whatsapp/clevertap",
+              celetelApiKey: "engage-api-key",
+              celetelWabaNumber: "+91 93113 78175",
+            },
+          },
+        }),
+      );
+      const template = unwrap(
+        await upsertMessageTemplate({
+          name: randomUUID(),
+          workspaceId: workspace.id,
+          definition: {
+            type: ChannelType.Webhook,
+            identifierKey: "phone",
+            body: JSON.stringify({
+              config: {
+                url: "celetel://campaign",
+                method: "POST",
+                responseType: "json",
+                data: {
+                  to: "{{ user.phone }}",
+                  templateName: "whatsapp_test",
+                  languageCode: "hi",
+                  components: [{ type: "body", body: { text: "hello" } }],
+                },
+              },
+              secret: { data: {} },
+            } satisfies ParsedWebhookBody),
+          } satisfies WebhookTemplateResource,
+        }),
+      );
+      mockAxios.request.mockResolvedValueOnce({
+        data: { success: true },
+        status: 200,
+        statusText: "OK",
+        headers: {},
+        config: {},
+      });
+
+      const result = await sendWebhook({
+        workspaceId: workspace.id,
+        templateId: template.id,
+        userPropertyAssignments: {
+          id: "user-1",
+          phone: "+91 98765 43210",
+        },
+        messageTags: { messageId: "message-1" },
+        useDraft: false,
+        userId: "user-1",
+      });
+
+      expect(result.isOk()).toBe(true);
+      expect(mockAxios.request.mock.calls).toHaveLength(1);
+      expect(mockAxios.request.mock.calls[0]?.[0]).toEqual({
+        url: "https://one.celetel.com/api/ums/v1/ums-req/messages/whatsapp/clevertap",
+        method: "POST",
+        data: {
+          payloadVersion: 0.1,
+          to: "919876543210",
+          wabaNumber: "919311378175",
+          isTemplate: true,
+          msgId: "message-1",
+          template: {
+            namespace: "whatsapp_test",
+            languageCode: "hi",
+          },
+          components: [{ type: "body", body: { text: "hello" } }],
+        },
+        timeout: 30000,
+        headers: {
+          "X-api-key": "engage-api-key",
+          "Content-Type": "application/json",
+          Accept: "application/json",
+        },
+      });
+      expect(JSON.stringify(result)).not.toContain("engage-api-key");
+    });
+
     it("sends a Celetel campaign without exposing provider credentials", async () => {
       unwrap(
         await insert({
