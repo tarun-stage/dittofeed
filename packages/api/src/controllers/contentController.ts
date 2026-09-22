@@ -339,6 +339,12 @@ export default async function contentController(fastify: FastifyInstance) {
                       templateName: template.name,
                       languageCode: template.languageCode,
                       components: campaignComponents,
+                      ...(template.headerFormat
+                        ? { headerFormat: template.headerFormat }
+                        : {}),
+                      ...(template.headerExampleUrl
+                        ? { headerExampleUrl: template.headerExampleUrl }
+                        : {}),
                     },
                   },
                   secret: {

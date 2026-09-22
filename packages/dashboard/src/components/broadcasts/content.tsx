@@ -238,6 +238,9 @@ interface WhatsAppTemplatePreview {
   templateName: string;
   languageCode: string;
   message: string;
+  headerFormat?: string;
+  headerImageUrl?: string;
+  headerExampleUrl?: string;
 }
 
 interface RefreshCeletelTemplatesResponse {
@@ -281,7 +284,62 @@ function getWhatsAppTemplatePreview(
         ? bodyComponent.body.text
         : "Template content is managed in Celetel.";
 
-    return { templateName, languageCode, message };
+    const headerComponent = Array.isArray(data.components)
+      ? data.components.find(
+          (component) => isRecord(component) && component.type === "header",
+        )
+      : undefined;
+    const headerParameters =
+      isRecord(headerComponent) && Array.isArray(headerComponent.parameters)
+        ? headerComponent.parameters
+        : [];
+    const imageParameter = headerParameters.find(
+      (parameter) => isRecord(parameter) && parameter.type === "image",
+    );
+    const image = isRecord(imageParameter) ? imageParameter.image : undefined;
+    const headerImageUrl =
+      isRecord(image) && typeof image.link === "string"
+        ? image.link
+        : undefined;
+    const headerFormat =
+      typeof data.headerFormat === "string" ? data.headerFormat : undefined;
+    const headerExampleUrl =
+      typeof data.headerExampleUrl === "string"
+        ? data.headerExampleUrl
+        : undefined;
+
+    return {
+      templateName,
+      languageCode,
+      message,
+      headerFormat,
+      headerImageUrl,
+      headerExampleUrl,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function setWhatsAppHeaderImage(body: string, imageUrl: string): string | null {
+  try {
+    const parsed: unknown = JSON.parse(body);
+    if (!isRecord(parsed) || !isRecord(parsed.config)) return null;
+    const { data } = parsed.config;
+    if (!isRecord(data)) return null;
+    const components = Array.isArray(data.components)
+      ? data.components.filter(
+          (component) => !isRecord(component) || component.type !== "header",
+        )
+      : [];
+    data.components = [
+      {
+        type: "header",
+        parameters: [{ type: "image", image: { link: imageUrl } }],
+      },
+      ...components,
+    ];
+    return JSON.stringify(parsed);
   } catch {
     return null;
   }
@@ -341,12 +399,18 @@ function EmailControls({
 }
 
 function ExistingTemplatePreview({ broadcastId }: { broadcastId: string }) {
+  const { workspace } = useAppStorePick(["workspace"]);
   const { data: broadcast } = useBroadcastQuery(broadcastId);
+  const broadcastMutation = useBroadcastMutation(broadcastId);
+  const updateMessageTemplateMutation = useMessageTemplateUpdateMutation();
+  const { enqueueSnackbar } = useSnackbar();
   const messageTemplateId = useMemo<string | undefined>(
     () => broadcast?.messageTemplateId,
     [broadcast?.messageTemplateId],
   );
   const { data: messageTemplate } = useMessageTemplateQuery(messageTemplateId);
+  const [whatsAppImageUrl, setWhatsAppImageUrl] = useState<string | null>(null);
+  useEffect(() => setWhatsAppImageUrl(null), [messageTemplateId]);
   if (!messageTemplate || !messageTemplateId) {
     return null;
   }
@@ -378,6 +442,78 @@ function ExistingTemplatePreview({ broadcastId }: { broadcastId: string }) {
         messageTemplate.definition.body,
       );
       if (whatsAppPreview) {
+        const isImageHeader = whatsAppPreview.headerFormat === "IMAGE";
+        const displayedImageUrl =
+          whatsAppImageUrl ??
+          whatsAppPreview.headerImageUrl ??
+          whatsAppPreview.headerExampleUrl ??
+          "";
+        const saveImage = () => {
+          if (
+            workspace.type !== CompletionStatus.Successful ||
+            messageTemplate.definition?.type !== ChannelType.Webhook
+          ) {
+            return;
+          }
+          let parsedUrl: URL;
+          try {
+            parsedUrl = new URL(displayedImageUrl);
+          } catch {
+            enqueueSnackbar("Enter a valid public HTTPS image URL", {
+              variant: "error",
+            });
+            return;
+          }
+          if (parsedUrl.protocol !== "https:") {
+            enqueueSnackbar("WhatsApp image URL must use HTTPS", {
+              variant: "error",
+            });
+            return;
+          }
+          const body = setWhatsAppHeaderImage(
+            messageTemplate.definition.body,
+            parsedUrl.toString(),
+          );
+          if (!body) {
+            enqueueSnackbar("WhatsApp template could not be updated", {
+              variant: "error",
+            });
+            return;
+          }
+          const internalTemplateId = getBroadcastMessageTemplateId({
+            broadcastId,
+            workspaceId: workspace.value.id,
+          });
+          updateMessageTemplateMutation.mutate(
+            {
+              id: internalTemplateId,
+              name: getBroadcastMessageTemplateName({ broadcastId }),
+              definition: { ...messageTemplate.definition, body },
+              resourceType: "Internal",
+            },
+            {
+              onSuccess: () => {
+                broadcastMutation.mutate(
+                  { messageTemplateId: internalTemplateId },
+                  {
+                    onSuccess: () =>
+                      enqueueSnackbar("WhatsApp header image saved", {
+                        variant: "success",
+                      }),
+                    onError: () =>
+                      enqueueSnackbar("Campaign image could not be attached", {
+                        variant: "error",
+                      }),
+                  },
+                );
+              },
+              onError: () =>
+                enqueueSnackbar("WhatsApp image could not be saved", {
+                  variant: "error",
+                }),
+            },
+          );
+        };
         return (
           <Stack
             spacing={2}
@@ -423,6 +559,48 @@ function ExistingTemplatePreview({ broadcastId }: { broadcastId: string }) {
               value={whatsAppPreview.message}
               InputProps={{ readOnly: true }}
             />
+            {isImageHeader && (
+              <Stack spacing={1.5}>
+                <TextField
+                  fullWidth
+                  label="Header image URL"
+                  value={displayedImageUrl}
+                  disabled={broadcast?.status !== "Draft"}
+                  onChange={(event) => setWhatsAppImageUrl(event.target.value)}
+                  helperText="Use a public HTTPS image URL, then save it for this campaign."
+                />
+                {displayedImageUrl && (
+                  <Box
+                    component="img"
+                    src={displayedImageUrl}
+                    alt="WhatsApp header preview"
+                    sx={{
+                      width: 240,
+                      maxHeight: 160,
+                      objectFit: "cover",
+                      borderRadius: 1,
+                    }}
+                  />
+                )}
+                <Box>
+                  <Button
+                    variant="contained"
+                    disabled={
+                      broadcast?.status !== "Draft" ||
+                      !displayedImageUrl ||
+                      updateMessageTemplateMutation.isPending ||
+                      broadcastMutation.isPending
+                    }
+                    onClick={saveImage}
+                  >
+                    {updateMessageTemplateMutation.isPending ||
+                    broadcastMutation.isPending
+                      ? "Saving..."
+                      : "Save image for campaign"}
+                  </Button>
+                </Box>
+              </Stack>
+            )}
           </Stack>
         );
       }

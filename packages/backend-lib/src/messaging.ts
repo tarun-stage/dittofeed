@@ -2640,6 +2640,8 @@ export interface CeletelWhatsAppTemplate {
   category?: string;
   components: unknown[];
   bodyText?: string;
+  headerFormat?: string;
+  headerExampleUrl?: string;
 }
 
 function recordValue(value: unknown): Record<string, unknown> | null {
@@ -2693,6 +2695,24 @@ export function normalizeCeletelWhatsAppTemplates(
     const bodyRecord = recordValue(body);
     const bodyText =
       typeof bodyRecord?.text === "string" ? bodyRecord.text : undefined;
+    const header = components.find((component) => {
+      const componentRecord = recordValue(component);
+      return (
+        typeof componentRecord?.type === "string" &&
+        componentRecord.type.toUpperCase() === "HEADER"
+      );
+    });
+    const headerRecord = recordValue(header);
+    const headerFormat =
+      typeof headerRecord?.format === "string"
+        ? headerRecord.format.toUpperCase()
+        : undefined;
+    const headerExample = recordValue(headerRecord?.example);
+    const headerHandles = headerExample?.header_handle;
+    const headerExampleUrl =
+      Array.isArray(headerHandles) && typeof headerHandles[0] === "string"
+        ? headerHandles[0]
+        : undefined;
     return [
       {
         name,
@@ -2703,6 +2723,8 @@ export function normalizeCeletelWhatsAppTemplates(
           typeof template.category === "string" ? template.category : undefined,
         components,
         bodyText,
+        headerFormat,
+        headerExampleUrl,
       },
     ];
   });

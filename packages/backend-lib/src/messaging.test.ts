@@ -115,7 +115,16 @@ describe("normalizeCeletelWhatsAppTemplates", () => {
               language: "hi",
               status: "APPROVED",
               category: "MARKETING",
-              components: [{ type: "BODY", text: "Namaste {{1}}" }],
+              components: [
+                {
+                  type: "HEADER",
+                  format: "IMAGE",
+                  example: {
+                    header_handle: ["https://cdn.example.com/header.jpg"],
+                  },
+                },
+                { type: "BODY", text: "Namaste {{1}}" },
+              ],
             },
           },
         },
@@ -126,8 +135,19 @@ describe("normalizeCeletelWhatsAppTemplates", () => {
         languageCode: "hi",
         status: "APPROVED",
         category: "MARKETING",
-        components: [{ type: "BODY", text: "Namaste {{1}}" }],
+        components: [
+          {
+            type: "HEADER",
+            format: "IMAGE",
+            example: {
+              header_handle: ["https://cdn.example.com/header.jpg"],
+            },
+          },
+          { type: "BODY", text: "Namaste {{1}}" },
+        ],
         bodyText: "Namaste {{1}}",
+        headerFormat: "IMAGE",
+        headerExampleUrl: "https://cdn.example.com/header.jpg",
       },
     ]);
   });
